@@ -26,26 +26,29 @@ namespace qvvr
         {
             vr::HmdMatrix34_t pose = {};
             bool pending = false;
+            bool opaqueScene = false;
         };
         Slot slots[PoseSlotCount];
         std::mutex mutex;
     public:
-        bool TryWrite(int slot, const vr::HmdMatrix34_t& pose)
+        bool TryWrite(int slot, const vr::HmdMatrix34_t& pose, bool opaqueScene = false)
         {
             if (slot < 0 || slot >= PoseSlotCount) return false;
             std::lock_guard<std::mutex> lock(mutex);
             if (slots[slot].pending) return false;
             slots[slot].pose = pose;
+            slots[slot].opaqueScene = opaqueScene;
             slots[slot].pending = true;
             return true;
         }
 
-        bool TryRead(int slot, vr::HmdMatrix34_t& pose)
+        bool TryRead(int slot, vr::HmdMatrix34_t& pose, bool *opaqueScene = nullptr)
         {
             if (slot < 0 || slot >= PoseSlotCount) return false;
             std::lock_guard<std::mutex> lock(mutex);
             if (!slots[slot].pending) return false;
             pose = slots[slot].pose;
+            if (opaqueScene) *opaqueScene = slots[slot].opaqueScene;
             slots[slot].pending = false;
             return true;
         }

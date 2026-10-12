@@ -28,7 +28,7 @@ void CancelOpenXrFrame();
 bool OpenXrRequested();
 void SetOpenXrColorSpace(bool gammaGame, bool sourceSrgb);
 bool BeginOpenXrFrame(ID3D11Texture2D *left);
-bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::HmdMatrix34_t &head, bool flip);
+bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::HmdMatrix34_t &head, bool flip, bool opaqueScene = false);
 bool OpenXrSelected();
 // 0=OpenVR, 1=XR waiting, 2=XR visible, 3=XR focused, negative=XR failure.
 int OpenXrStatus();

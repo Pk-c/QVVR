@@ -14,6 +14,7 @@ namespace QVVR
         private Vector3 startPosition, startMidpoint;
         private Quaternion startRotation, startHands, startControllers;
         private float startScale, startSeparation;
+        private float translationGain = 1f, rotationGain = 1f;
 
         internal void Place(Vector3 position, Quaternion rotation, float scale)
         {
@@ -22,7 +23,7 @@ namespace QVVR
         }
 
         internal void Update(bool held, bool tracked, Vector3 left, Quaternion leftRotation,
-            Vector3 right, Quaternion rightRotation)
+            Vector3 right, Quaternion rightRotation, float moveSensitivity = 1f, float turnSensitivity = 1f)
         {
             if (!held || !tracked || !Valid) { Stop(); return; }
             // A quaternion mean is ambiguous for opposing wrist orientations.
@@ -40,6 +41,9 @@ namespace QVVR
                 startPosition = Position; startRotation = Rotation; startScale = Scale;
                 startMidpoint = midpoint; startHands = hands; startSeparation = separation;
                 startControllers = Quaternion.Lerp(leftRotation, rightRotation, 0.5f);
+                // Latch gains on regrab: changing a setting must not snap a held world.
+                translationGain = SpatialMath.Gain(moveSensitivity);
+                rotationGain = SpatialMath.Gain(turnSensitivity);
                 Active = true;
                 return; // Always rebase at the current hands; never snap.
             }
@@ -53,7 +57,9 @@ namespace QVVR
             // both estimates produce exactly the same rotation, not double it.
             if (handAngle + wristAngle > 0.001f)
                 delta = Quaternion.Slerp(delta, controllerDelta, wristAngle / (handAngle + wristAngle));
-            Position = midpoint + delta * (startPosition - startMidpoint) * (Scale / startScale);
+            delta = Quaternion.SlerpUnclamped(Quaternion.identity, delta, rotationGain);
+            Position = startMidpoint + (midpoint - startMidpoint) * translationGain +
+                delta * (startPosition - startMidpoint) * (Scale / startScale);
             Rotation = delta * startRotation;
             Dirty = true;
         }
@@ -67,6 +73,7 @@ namespace QVVR
 
     internal static class SpatialMath
     {
+        internal static float Gain(float value) { return Finite(value) ? Mathf.Clamp(value, 0.25f, 3f) : 1f; }
         internal static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
         internal static bool Finite(Vector3 value) { return Finite(value.x) && Finite(value.y) && Finite(value.z); }
         internal static bool Finite(Quaternion value)
@@ -103,10 +110,14 @@ namespace QVVR
             return Finite(rotation);
         }
 
-        internal static Vector3 VisibleOffset(Vector3 requested, float extent)
+        internal static Vector3 VisibleOffset(Vector3 requested, float radiusMeters, float heightMeters)
         {
-            float distance = Mathf.Max(1.5f, extent * 0.9f + 0.5f);
-            if (!Finite(requested)) return new Vector3(0f, -0.35f, distance);
+            // Actual cylinder bounding sphere, not nearly a full DIAMETER of
+            // clearance. Stay outside even after tilt, but allow a closer entry.
+            float radius = Finite(radiusMeters) ? Mathf.Max(0f, radiusMeters) : 0.8f;
+            float halfHeight = Finite(heightMeters) ? Mathf.Max(0f, heightMeters * 0.5f) : 0.4f;
+            float distance = Mathf.Max(1.25f, Mathf.Sqrt(radius * radius + halfHeight * halfHeight) + 0.5f);
+            if (!Finite(requested)) return new Vector3(0f, -0.35f, Mathf.Max(1.6f, distance));
             float z = Mathf.Clamp(requested.z, distance, 6f);
             // Saved settings may come from behind/under the user while walking.
             // Reuse depth/height, but ensure the next level is in front and visible.

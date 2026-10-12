@@ -489,7 +489,7 @@ void SampleHand(int index, OpenXrHand &hand)
         (BoolAction(back, handPaths[index]) ? 2u : 0u) | (BoolAction(stickClick, handPaths[index]) ? 4u : 0u) |
         (BoolAction(gripClick, handPaths[index]) ? 8u : 0u);
 }
-bool CopyEye(int index, ID3D11Texture2D *source, bool flip)
+bool CopyEye(int index, ID3D11Texture2D *source, bool flip, bool opaqueScene)
 {
     auto &eye = eyes[index];
     if (sourceTextures[index] != source)
@@ -537,7 +537,11 @@ bool CopyEye(int index, ID3D11Texture2D *source, bool flip)
     context->IASetInputLayout(nullptr);
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context->VSSetShader(copyVs, nullptr, 0);
-    context->PSSetShader(copyPs[sourceDecodeMode[index] * 2 + (flip ? 1 : 0)], nullptr, 0);
+    // Original menu shaders can write alpha=0: ignore it in opaque RGB decode
+    // as well as composition, without altering gameplay's premultiplied copy.
+    int decode = sourceDecodeMode[index];
+    if (opaqueScene && decode == 2) decode = 1;
+    context->PSSetShader(copyPs[decode * 2 + (flip ? 1 : 0)], nullptr, 0);
     context->PSSetShaderResources(0, 1, &sources[index]);
     context->Draw(3, 0);
     context->Flush();
@@ -724,11 +728,11 @@ int PrepareOpenXrFrame(OpenXrFrame &snapshot)
     SampleHand(1, snapshot.rightHand);
     return true;
 }
-bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::HmdMatrix34_t &, bool flip)
+bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::HmdMatrix34_t &, bool flip, bool opaqueScene)
 {
     if (!frameBegun)
         return false;
-    bool copied = shouldRender && CopyEye(0, left, flip) && CopyEye(1, right, flip);
+    bool copied = shouldRender && CopyEye(0, left, flip, opaqueScene) && CopyEye(1, right, flip, opaqueScene);
     XrCompositionLayerProjectionView views[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                                  {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     for (int i = 0; i < 2; ++i)
@@ -743,7 +747,9 @@ bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::
     projection.space = stage;
     projection.viewCount = 2;
     projection.views = views;
-    projection.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    // ALPHA_BLEND stays active. Only this exact frame's full-scene menu layer
+    // ignores source alpha; the next gameplay frame retains passthrough.
+    projection.layerFlags = opaqueScene ? 0 : XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     const XrCompositionLayerBaseHeader *layers[] = {
         reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projection)};
     XrFrameEndInfo end = {XR_TYPE_FRAME_END_INFO};

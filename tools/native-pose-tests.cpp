@@ -22,13 +22,15 @@ int main()
             for (int row = 0; row < 3; ++row)
                 for (int column = 0; column < 4; ++column)
                     pose.m[row][column] = static_cast<float>(round * 1000 + slot * 12 + row * 4 + column);
-            Check(queue.TryWrite(slot, pose), "Empty slot must accept a pose.");
+            Check(queue.TryWrite(slot, pose, slot % 2 != 0), "Empty slot must accept a pose.");
             vr::HmdMatrix34_t wrong = {};
             Check(!queue.TryWrite(slot, wrong), "Queued pose must not be overwritten.");
         }
         for (int slot = qvvr::PoseSlotCount - 1; slot >= 0; --slot)
         {
-            Check(queue.TryRead(slot, read), "Queued pose must remain readable in arbitrary order.");
+            bool opaque = false;
+            Check(queue.TryRead(slot, read, &opaque), "Queued pose must remain readable in arbitrary order.");
+            Check(opaque == (slot % 2 != 0), "Opaque menu mode must travel with its exact frame pose, not a latest global.");
             for (int row = 0; row < 3; ++row)
                 for (int column = 0; column < 4; ++column)
                     Check(read.m[row][column] == round * 1000 + slot * 12 + row * 4 + column, "Pose was mixed with a different frame.");
@@ -57,12 +59,14 @@ int main()
         {
             vr::HmdMatrix34_t pose = {};
             for (auto& row : pose.m) for (auto& value : row) value = static_cast<float>(index);
-            while (!queue.TryWrite(index % qvvr::PoseSlotCount, pose)) std::this_thread::yield();
+            while (!queue.TryWrite(index % qvvr::PoseSlotCount, pose, index % 3 == 0)) std::this_thread::yield();
         }
     });
     for (int index = 1; index <= 10000; ++index)
     {
-        while (!queue.TryRead(index % qvvr::PoseSlotCount, read)) std::this_thread::yield();
+        bool opaque = false;
+        while (!queue.TryRead(index % qvvr::PoseSlotCount, read, &opaque)) std::this_thread::yield();
+        Check(opaque == (index % 3 == 0), "Cross-thread scene mode was mixed with another pose.");
         for (const auto& row : read.m) for (auto value : row)
             Check(value == index, "Cross-thread frame pose was overwritten or torn.");
     }

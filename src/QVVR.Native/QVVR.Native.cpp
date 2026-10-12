@@ -48,13 +48,16 @@ vr::TrackedDevicePose_t renderPoses[vr::k_unMaxTrackedDeviceCount] = {};
 bool frameReady = false; // Accessed only on Unity's graphics thread.
 constexpr int ClipEventBase = 0x51566000;
 constexpr int EndClipEvent = 0x51566200;
+constexpr int CapCompositeEvent = 0x51566201;
 constexpr int ShutdownEvent = 0x51566300;
 struct ClipSlot
 {
     qvvr::ClipParameters eye[2];
+    bool caps[2] = {}, reversed[2] = {}, transparent[2] = {};
 } clipSlots[qvvr::PoseSlotCount] = {};
 std::mutex clipMutex;
 bool usingXrFrame = false;
+bool activeOpaqueScene = false;
 qvvr::GpuTiming gpuTiming;
 
 void __stdcall OnRenderEvent(int eventId)
@@ -74,17 +77,25 @@ void __stdcall OnRenderEvent(int eventId)
         qvvr::EndShaderClip();
         return;
     }
+    if (eventId == CapCompositeEvent)
+    {
+        qvvr::CompositeShaderCaps();
+        return;
+    }
     if (eventId >= ClipEventBase && eventId < ClipEventBase + qvvr::PoseSlotCount * 4)
     {
         int offset = eventId - ClipEventBase, eye = offset % 4, slot = offset / 4;
         if (eye > 1)
             return;
         qvvr::ClipParameters parameters;
+        bool caps, reversed, transparent;
         {
             std::lock_guard<std::mutex> lock(clipMutex);
             parameters = clipSlots[slot].eye[eye];
+            caps = clipSlots[slot].caps[eye]; reversed = clipSlots[slot].reversed[eye];
+            transparent = clipSlots[slot].transparent[eye];
         }
-        qvvr::BeginShaderClip(parameters);
+        qvvr::BeginShaderClip(parameters, caps, reversed, transparent);
         return;
     }
     // Slot identity travels with the queued Unity command, not a shared
@@ -115,7 +126,7 @@ void __stdcall OnRenderEvent(int eventId)
     if (beginFrame)
     {
         frameReady = false;
-        if (!poseQueue.TryRead(slot, activeRenderPose))
+        if (!poseQueue.TryRead(slot, activeRenderPose, &activeOpaqueScene))
             return;
         activeSlot = slot;
         usingXrFrame = xrRequested;
@@ -147,7 +158,7 @@ void __stdcall OnRenderEvent(int eventId)
     {
         bool result =
             qvvr::SubmitOpenXrFrame(static_cast<ID3D11Texture2D *>(left), static_cast<ID3D11Texture2D *>(right),
-                                    activeRenderPose, flipEyeTextureY.load());
+                                    activeRenderPose, flipEyeTextureY.load(), activeOpaqueScene);
         gpuTiming.End();
         leftSubmitResult.store(result ? 0 : qvvr::OpenXrError());
         rightSubmitResult.store(result ? 0 : qvvr::OpenXrError());
@@ -245,6 +256,29 @@ extern "C"
             return;
         std::lock_guard<std::mutex> lock(clipMutex);
         clipSlots[slot].eye[eye] = *parameters;
+        clipSlots[slot].caps[eye] = false;
+    }
+    __declspec(dllexport) void __cdecl QVVR_SetCylinderCapOptions(int slot, int eye, int enabled, int reversedZ, int transparent)
+    {
+        if (slot < 0 || slot >= qvvr::PoseSlotCount || eye < 0 || eye > 1) return;
+        std::lock_guard<std::mutex> lock(clipMutex);
+        clipSlots[slot].caps[eye] = enabled != 0;
+        clipSlots[slot].reversed[eye] = reversedZ != 0;
+        clipSlots[slot].transparent[eye] = transparent != 0;
+    }
+    __declspec(dllexport) void __cdecl QVVR_RegisterCapMesh(void *indices)
+    {
+        qvvr::RegisterCapMesh(static_cast<ID3D11Buffer *>(indices));
+    }
+    __declspec(dllexport) void __cdecl QVVR_ClearCapMeshes()
+    {
+        qvvr::ClearCapMeshes();
+    }
+    __declspec(dllexport) void __cdecl QVVR_GetCapStats(unsigned *available, unsigned *registered, unsigned *replayed, unsigned *composed)
+    {
+        unsigned a=0,r=0,v=0,c=0;
+        qvvr::GetCapStats(a,r,v,c);
+        if(available)*available=a;if(registered)*registered=r;if(replayed)*replayed=v;if(composed)*composed=c;
     }
     __declspec(dllexport) void __cdecl QVVR_ConfigureOpenXr(int enabled)
     {
@@ -293,6 +327,10 @@ extern "C"
     __declspec(dllexport) int __cdecl QVVR_SetRenderPose(int slot, const vr::HmdMatrix34_t *pose)
     {
         return pose != nullptr && poseQueue.TryWrite(slot, *pose) ? 1 : 0;
+    }
+    __declspec(dllexport) int __cdecl QVVR_SetRenderPoseAndMode(int slot, const vr::HmdMatrix34_t *pose, int opaqueScene)
+    {
+        return pose != nullptr && poseQueue.TryWrite(slot, *pose, opaqueScene != 0) ? 1 : 0;
     }
 
     __declspec(dllexport) void __cdecl QVVR_SetFlipEyeTextureY(int enabled)

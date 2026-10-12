@@ -16,6 +16,7 @@ namespace QVVR
         internal static ManualLogSource Log;
 
         internal ConfigEntry<bool> VrEnabled;
+        internal ConfigEntry<bool> StereoSelectionMenus;
         internal ConfigEntry<float> EyeTextureResolutionScale;
         internal ConfigEntry<bool> FlipEyeTextureY;
         internal ConfigEntry<bool> VrControllerInput;
@@ -28,6 +29,7 @@ namespace QVVR
         internal ConfigEntry<Vector3> PlacementOffset, PlacementEuler;
         internal ConfigEntry<float> PreferredSizeMeters;
         internal ConfigEntry<float> WorldGrabTranslationGain;
+        internal ConfigEntry<float> DioramaMoveSensitivity, DioramaRotationSensitivity;
         internal ConfigEntry<float> PanelWidth;
         internal ConfigEntry<float> PanelDistance;
         internal ConfigEntry<float> PanelFollowLag;
@@ -42,6 +44,7 @@ namespace QVVR
         internal ConfigEntry<float> DioramaCenterHeight;
         internal ConfigEntry<float> DioramaFeatherWidth;
         internal ConfigEntry<bool> HideDecorativeClouds;
+        internal ConfigEntry<bool> LiquidDepthFix, BlackCutSurfaces;
         internal ConfigEntry<bool> DioramaFollowPlayer;
         internal ConfigEntry<bool> DioramaFollowCamera;
         internal ConfigEntry<bool> PassthroughEnabled;
@@ -118,6 +121,8 @@ namespace QVVR
         {
             VrEnabled = Config.Bind("VR", "Enabled", true,
                 "Initialize OpenVR and submit stereoscopic frames.");
+            StereoSelectionMenus = Config.Bind("VR", "StereoSelectionMenus", false,
+                "Experimental full stereo costume/map selections without gameplay placement/cylinder/passthrough. Off until Frame framing/performance testing. Title/loading/unknown states remain 2D. False restores captured 2D menus. Live setting.");
             EyeTextureResolutionScale = Config.Bind("VR", "EyeTextureResolutionScale", 1f,
                 "Scale applied to runtime-recommended per-eye size; applies on next launch.");
             EyeMsaaSamples = Config.Bind("VR", "EyeMsaaSamples", 2,
@@ -130,7 +135,11 @@ namespace QVVR
             VrControllerInput = Config.Bind("Controls", "VrControllerInput", true,
                 "Bridge OpenVR controller sticks and buttons into QV's Rewired actions.");
             TwoGripWorldGrab = Config.Bind("Controls", "TwoGripWorldGrab", true,
-                "In gameplay, hold both grips to naturally translate, resize and rotate the diorama using the shared hand frame. Release either grip to retain the pose; movement is 1:1 in tracking meters.");
+                "In gameplay, hold both grips to translate, resize and rotate the diorama using the shared hand frame. Release either grip to retain the pose; sensitivity is configurable.");
+            DioramaMoveSensitivity = Config.Bind("Controls", "DioramaMoveSensitivity", 1.15f,
+                "Two-hand translation gain in tracking space, default 1.15 (15% faster), range 0.25-3. Does not affect head tracking or resize. Latched on grab.");
+            DioramaRotationSensitivity = Config.Bind("Controls", "DioramaRotationSensitivity", 1.1f,
+                "Two-hand rotation gain, default 1.1 (10% faster), range 0.25-3. Does not affect head tracking or resize. Latched on grab.");
             RightGripWorldGrab = Config.Bind("Controls", "RightGripWorldGrab", false,
                 "Legacy setting retained for configuration compatibility; right grip alone no longer manipulates the diorama. Hold both grips for natural translation, size and rotation.");
             RightGripTranslationGain = Config.Bind("Controls", "RightGripTranslationGain", 20f,
@@ -138,7 +147,7 @@ namespace QVVR
             IndependentDioramaView = Config.Bind("Comfort", "IndependentDioramaView", true,
                 "Latch the game view pose at level entry/recenter, then follow player translation only. Head tracking affects eyes, never the diorama anchor. False restores the legacy game-camera view/follow settings.");
             WorldGrabTranslationGain = Config.Bind("Controls", "WorldGrabTranslationGain", 4f,
-                "Legacy two-hand pan sensitivity retained for configuration compatibility. Both grips now adjust physical size only; right-hand movement uses RightGripTranslationGain.");
+                "Legacy pan sensitivity retained for configuration compatibility. The physical two-hand gesture uses DioramaMoveSensitivity and DioramaRotationSensitivity instead.");
             PanelWidth = Config.Bind("Comfort", "PanelWidthMeters", 2.4f,
                 "Physical width of the 16:9 game/UI panel; range 1 to 4 meters.");
             PanelDistance = Config.Bind("Comfort", "PanelDistanceMeters", 2.8f,
@@ -160,7 +169,7 @@ namespace QVVR
             DioramaWorldScale = Config.Bind("Diorama", "WorldScale", 1f,
                 "Physical diorama size multiplier, 0.001 to 10. Both grips adjust size alongside translation/rotation; live menu size changes preserve center. Entry fits saved preferred physical size. Full stereo head translation is preserved.");
             PlacementSaved = Config.Bind("Diorama", "PlacementSaved", false, "A reusable physical layout has been saved after a placement or first automatic fit.");
-            PlacementOffset = Config.Bind("Diorama", "PlacementOffsetMeters", new Vector3(0f, -0.35f, 2f),
+            PlacementOffset = Config.Bind("Diorama", "PlacementOffsetMeters", new Vector3(0f, -0.35f, 1.6f),
                 "Saved cylinder center relative to the user's upright heading at gesture release; next level reuses it with front/visibility safeguards.");
             PlacementEuler = Config.Bind("Diorama", "PlacementEulerDegrees", Vector3.zero, "Saved diorama orientation relative to the user's upright heading.");
             PreferredSizeMeters = Config.Bind("Diorama", "PreferredSizeMeters", 1.6f, "Saved physical largest cylinder dimension; first entry defaults to 1.6 m. Entry fit clamps 0.05-4 m; in-level gestures keep full size range.");
@@ -176,6 +185,10 @@ namespace QVVR
                 "One-time widening of the old shipped 0.35 feather to 1; custom widths and disabled fade are preserved.");
             HideDecorativeClouds = Config.Bind("Diorama", "HideDecorativeClouds", true,
                 "Hide QV's decorative Clouds mesh and screen-space cloud shadow during VR gameplay renders only. RainCloud gameplay, UI, menus and desktop rendering are preserved. Live setting.");
+            LiquidDepthFix = Config.Bind("Diorama", "LiquidDepthFix", true,
+                "Generate a fresh depth texture for each gameplay eye when a known depth-dependent liquid is active. Fixes stale/missing water/ink depth without faking camera position; adds an opaque depth pass. Live setting.");
+            BlackCutSurfaces = Config.Bind("Diorama", "BlackCutSurfaces", false,
+                "Experimental GPU stencil caps: close clipped opaque solids in black, leaving empty space transparent. Extra geometry pass; off until headset correctness/performance testing. Open/non-manifold meshes may not cap correctly. Live setting.");
             DioramaFollowCamera = Config.Bind("Diorama", "FollowCamera", true,
                 "Move the cylinder with the original game camera, preserving its initial player-centered offset. Does not follow HMD motion or manual grip translation. Takes priority over FollowPlayer.");
             DioramaFollowPlayer = Config.Bind("Diorama", "FollowPlayer", false,

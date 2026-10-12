@@ -1,4 +1,5 @@
 #include "ShaderClip.h"
+#include "CylinderCaps.h"
 #include <D3D12TokenizedProgramFormat.hpp>
 #include <DxilHash.cpp>
 #include <atomic>
@@ -448,6 +449,8 @@ using SetBlend = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, ID3D11BlendSta
 using CreateBlend = HRESULT(STDMETHODCALLTYPE *)(ID3D11Device *, const D3D11_BLEND_DESC *, ID3D11BlendState **);
 using Draw = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, UINT);
 using DrawIndexed = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, UINT, INT);
+using DrawIndexedInstanced = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, UINT, UINT, INT, UINT);
+using DrawIndexedIndirect = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, ID3D11Buffer *, UINT);
 using SetTargets = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, ID3D11RenderTargetView *const *,
                                              ID3D11DepthStencilView *);
 using SetTargetsUav = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, ID3D11RenderTargetView *const *,
@@ -460,6 +463,11 @@ SetBlend originalBlend = nullptr;
 CreateBlend originalCreateBlend = nullptr;
 Draw originalDraw = nullptr;
 DrawIndexed originalDrawIndexed = nullptr;
+DrawIndexedInstanced originalDrawIndexedInstanced = nullptr;
+DrawIndexedIndirect originalDrawIndexedIndirect = nullptr;
+qvvr::CylinderCaps cylinderCaps;
+bool internalCapDraw = false;
+bool capShaderSupported = false;
 SetTargets originalTargets = nullptr;
 SetTargetsUav originalTargetsUav = nullptr;
 ID3D11Texture2D *clipTargets[2] = {};
@@ -634,27 +642,61 @@ void CollectWorldConstants()
 }
 void STDMETHODCALLTYPE HookDraw(ID3D11DeviceContext *ctx, UINT count, UINT start)
 {
+    if (internalCapDraw) { originalDraw(ctx, count, start); return; }
     CaptureWorldConstants(ctx);
     originalDraw(ctx, count, start);
 }
+bool BeginCapVolume(ID3D11DeviceContext *ctx)
+{
+    if (ctx != context || !clipping || !worldTarget || !cylinderCaps.Active()) return false;
+    internalCapDraw = true;
+    bool volume = opaqueDraw && capShaderSupported && cylinderCaps.BeforeVolume(requestedShader);
+    if (!volume) internalCapDraw = false;
+    return volume;
+}
+void EndCapVolume()
+{
+    cylinderCaps.AfterVolume(); internalCapDraw = false;
+}
 void STDMETHODCALLTYPE HookDrawIndexed(ID3D11DeviceContext *ctx, UINT count, UINT start, INT base)
 {
+    if (internalCapDraw) { originalDrawIndexed(ctx, count, start, base); return; }
     CaptureWorldConstants(ctx);
+    if (BeginCapVolume(ctx)) { originalDrawIndexed(ctx, count, start, base); EndCapVolume(); }
     originalDrawIndexed(ctx, count, start, base);
+}
+void STDMETHODCALLTYPE HookDrawIndexedInstanced(ID3D11DeviceContext *ctx, UINT count, UINT instances, UINT start, INT base, UINT first)
+{
+    if (internalCapDraw) { originalDrawIndexedInstanced(ctx, count, instances, start, base, first); return; }
+    CaptureWorldConstants(ctx);
+    if (BeginCapVolume(ctx)) { originalDrawIndexedInstanced(ctx, count, instances, start, base, first); EndCapVolume(); }
+    originalDrawIndexedInstanced(ctx, count, instances, start, base, first);
+}
+void STDMETHODCALLTYPE HookDrawIndexedIndirect(ID3D11DeviceContext *ctx, ID3D11Buffer *args, UINT offset)
+{
+    if (internalCapDraw) { originalDrawIndexedIndirect(ctx, args, offset); return; }
+    CaptureWorldConstants(ctx);
+    if (BeginCapVolume(ctx)) { originalDrawIndexedIndirect(ctx, args, offset); EndCapVolume(); }
+    originalDrawIndexedIndirect(ctx, args, offset);
 }
 bool Replace(void **table, unsigned index, void *function, void **original);
 void RestoreDiagnosticDrawHooks()
 {
+    if (cylinderCaps.Active()) return;
     auto table = *reinterpret_cast<void ***>(context);
     void *ignored = nullptr;
     if (table[12] == reinterpret_cast<void *>(&HookDrawIndexed))
         Replace(table, 12, reinterpret_cast<void *>(originalDrawIndexed), &ignored);
     if (table[13] == reinterpret_cast<void *>(&HookDraw))
         Replace(table, 13, reinterpret_cast<void *>(originalDraw), &ignored);
+    if (table[20] == reinterpret_cast<void *>(&HookDrawIndexedInstanced))
+        Replace(table, 20, reinterpret_cast<void *>(originalDrawIndexedInstanced), &ignored);
+    if (table[39] == reinterpret_cast<void *>(&HookDrawIndexedIndirect))
+        Replace(table, 39, reinterpret_cast<void *>(originalDrawIndexedIndirect), &ignored);
 }
 void ArmDiagnosticDrawHooks()
 {
-    if (!diagnosticArmed || diagnosticCaptured) return;
+    if (internalCapDraw || ((!diagnosticArmed || diagnosticCaptured) && !cylinderCaps.Active())) return;
     // The D3D11 runtime specializes its Draw entry points when shaders/states
     // change. Refresh only while this single snapshot is waiting for a draw.
     auto table = *reinterpret_cast<void ***>(context);
@@ -662,6 +704,13 @@ void ArmDiagnosticDrawHooks()
         Replace(table, 12, reinterpret_cast<void *>(&HookDrawIndexed), reinterpret_cast<void **>(&originalDrawIndexed));
     if (table[13] != reinterpret_cast<void *>(&HookDraw))
         Replace(table, 13, reinterpret_cast<void *>(&HookDraw), reinterpret_cast<void **>(&originalDraw));
+    if (cylinderCaps.Active())
+    {
+        if (table[20] != reinterpret_cast<void *>(&HookDrawIndexedInstanced))
+            Replace(table, 20, reinterpret_cast<void *>(&HookDrawIndexedInstanced), reinterpret_cast<void **>(&originalDrawIndexedInstanced));
+        if (table[39] != reinterpret_cast<void *>(&HookDrawIndexedIndirect))
+            Replace(table, 39, reinterpret_cast<void *>(&HookDrawIndexedIndirect), reinterpret_cast<void **>(&originalDrawIndexedIndirect));
+    }
 }
 HRESULT STDMETHODCALLTYPE HookCreate(ID3D11Device *device, const void *bytes, SIZE_T size, ID3D11ClassLinkage *linkage,
                                      ID3D11PixelShader **shader)
@@ -742,6 +791,7 @@ HRESULT STDMETHODCALLTYPE HookCreateBlend(ID3D11Device *device, const D3D11_BLEN
 void STDMETHODCALLTYPE HookSet(ID3D11DeviceContext *ctx, ID3D11PixelShader *shader, ID3D11ClassInstance *const *classes,
                                UINT count)
 {
+    if (internalCapDraw) { originalSet(ctx, shader, classes, count); return; }
     if (clipping && ctx != context)
         ++otherContextBindCount;
     if (ctx == context)
@@ -774,6 +824,7 @@ void STDMETHODCALLTYPE HookSet(ID3D11DeviceContext *ctx, ID3D11PixelShader *shad
         activeBuffer = v.slot;
         originalCB(ctx, activeBuffer, 1, &clipBuffer);
         originalSet(ctx, opaqueDraw ? v.opaque : premultipliedDraw ? v.premultiplied : v.shader, nullptr, 0);
+        capShaderSupported = !shader || v.shader != discardShader;
     }
     else
     {
@@ -811,19 +862,27 @@ void UpdateTarget(ID3D11DeviceContext *ctx, UINT count, ID3D11RenderTargetView *
 void STDMETHODCALLTYPE HookTargets(ID3D11DeviceContext *ctx, UINT count, ID3D11RenderTargetView *const *views,
                                    ID3D11DepthStencilView *depth)
 {
+    if (!internalCapDraw && ctx == context && clipping && worldTarget && cylinderCaps.Active() &&
+        (!depth || !count || !views || !IsWorldTarget(views[0])))
+    { internalCapDraw = true; cylinderCaps.Composite(); internalCapDraw = false; }
     originalTargets(ctx, count, views, depth);
-    UpdateTarget(ctx, count, views);
+    if (!internalCapDraw) UpdateTarget(ctx, count, views);
 }
 void STDMETHODCALLTYPE HookTargetsUav(ID3D11DeviceContext *ctx, UINT count, ID3D11RenderTargetView *const *views,
                                       ID3D11DepthStencilView *depth, UINT start, UINT uavs,
                                       ID3D11UnorderedAccessView *const *unordered, const UINT *counts)
 {
+    if (!internalCapDraw && ctx == context && clipping && worldTarget && cylinderCaps.Active() &&
+        count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL &&
+        (!depth || !count || !views || !IsWorldTarget(views[0])))
+    { internalCapDraw = true; cylinderCaps.Composite(); internalCapDraw = false; }
     originalTargetsUav(ctx, count, views, depth, start, uavs, unordered, counts);
-    if (count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
+    if (!internalCapDraw && count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
         UpdateTarget(ctx, count, views);
 }
 void STDMETHODCALLTYPE HookBlend(ID3D11DeviceContext *ctx, ID3D11BlendState *state, const FLOAT factors[4], UINT mask)
 {
+    if (internalCapDraw) { originalBlend(ctx, state, factors, mask); return; }
     if (ctx != context || !clipping)
     {
         originalBlend(ctx, state, factors, mask);
@@ -858,6 +917,7 @@ void STDMETHODCALLTYPE HookBlend(ID3D11DeviceContext *ctx, ID3D11BlendState *sta
 }
 void STDMETHODCALLTYPE HookBuffers(ID3D11DeviceContext *ctx, UINT start, UINT count, ID3D11Buffer *const *buffers)
 {
+    if (internalCapDraw) { originalCB(ctx, start, count, buffers); return; }
     if (ctx == context && clipping)
         for (UINT i = 0; i < count && start + i < 14; ++i)
         {
@@ -893,6 +953,9 @@ bool InstallShaderClip(ID3D11Device *device)
         return true;
     if (!device)
         return false;
+    // Optional pipeline: failure never disables clipping/VR. Its own shaders
+    // are created before shader interception and never enter game variants.
+    cylinderCaps.Initialize(device);
     device->GetImmediateContext(&context);
     context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void **>(&diagnosticContext));
     D3D11_BUFFER_DESC desc = {};
@@ -948,6 +1011,7 @@ bool InstallShaderClip(ID3D11Device *device)
 }
 void SetShaderClipTargets(ID3D11Texture2D *left, ID3D11Texture2D *right)
 {
+    cylinderCaps.SetTargets(left, right);
     if (left)
         left->AddRef();
     if (right)
@@ -959,10 +1023,20 @@ void SetShaderClipTargets(ID3D11Texture2D *left, ID3D11Texture2D *right)
     clipTargets[0] = left;
     clipTargets[1] = right;
 }
-void BeginShaderClip(const ClipParameters &parameters)
+void RegisterCapMesh(ID3D11Buffer *indices) { cylinderCaps.RegisterMesh(indices); }
+void ClearCapMeshes() { cylinderCaps.ClearMeshes(); }
+void CompositeShaderCaps()
+{
+    if (!context || !clipping || !worldTarget || !cylinderCaps.Active()) return;
+    internalCapDraw = true; cylinderCaps.Composite(); internalCapDraw = false;
+}
+void GetCapStats(unsigned &available, unsigned &registered, unsigned &replayed, unsigned &composed)
+{ cylinderCaps.Stats(available, registered, replayed, composed); }
+void BeginShaderClip(const ClipParameters &parameters, bool caps, bool reversedZ, bool transparent)
 {
     if (!context || clipping)
         return;
+    cylinderCaps.Begin(parameters, caps, reversedZ, transparent);
     CollectWorldConstants();
     diagnosticArmed = diagnosticQuery && !diagnosticCaptured && parameters.limits[0] > 4.f && parameters.limits[0] < 1e20f;
     if (diagnosticArmed) diagnostic.parameters = parameters;
@@ -994,6 +1068,9 @@ void EndShaderClip()
 {
     if (!context || !clipping)
         return;
+    internalCapDraw = true; cylinderCaps.Composite(); internalCapDraw = false;
+    cylinderCaps.End();
+    RestoreDiagnosticDrawHooks();
     clipping = false;
     // Restore Unity's latest requested bindings, matching its state cache.
     originalSet(context, requestedShader, nullptr, 0);

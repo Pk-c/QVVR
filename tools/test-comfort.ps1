@@ -199,11 +199,13 @@ $checks = @{
     'GripGestureState' = @('Update', 'Reset', 'get_Mode', 'get_Reserved')
     'DioramaScaleState' = @('Update', 'Resolve', 'Stop', 'ClearOverride', 'Clamp', 'get_Active', 'get_HasOverride', 'get_Scale')
     'DioramaPlacementState' = @('Place', 'Update', 'SetScale', 'Tilt', 'Stop', 'Saved', 'Reset', 'get_Valid', 'get_Active', 'get_Dirty', 'get_Position', 'get_Rotation', 'get_Scale')
-    'SpatialMath' = @('Finite', 'Finite', 'Finite', 'Upright', 'HandFrame', 'VisibleOffset', 'EntryScale', 'Movement')
+    'SpatialMath' = @('Gain', 'Finite', 'Finite', 'Finite', 'Upright', 'HandFrame', 'VisibleOffset', 'EntryScale', 'Movement')
     'DioramaMath' = @('FollowCameraAxis', 'GreenBackground', 'FeatherWidth', 'UpgradeFeatherWidth', 'HudScale', 'ScaleViewAxis', 'ViewUnits')
     'XrInputLatch' = @('Update', 'get_RenderReady', 'get_InputReady', 'get_Busy')
     'CloudVisualRules' = @('Hide', 'Named')
     'CloudRendererFilter' = @('HideForStereo', 'Restore', 'Clear', 'get_Count')
+    'LiquidDepthPolicy' = @('UsesDepth', 'get_Count', 'get_NeedsDepth', 'Clear')
+    'MenuScenePolicy' = @('IsIntroScene', 'StereoSelection', 'State', 'CaptureCanvas')
     'RenderBudget' = @('PresetScale', 'MsaaSamples', 'NextCapture')
     'OpenVrRenderer' = @('LateUpdate', 'PrepareTracking', 'XrTrackedPose', 'GetXrControllerState', 'get_UsesOpenXr', 'get_NeedsOpenVrSceneFallback', 'ToUnityMatrix', 'ToUnityProjection', 'UpdateWorldGrab', 'PositionPanels', 'UpdateRig', 'UpdateLegacyRig', 'CacheHeadPose', 'UprightHeadRotation', 'MapPlayerMovement', 'ResolveCylinderCenter', 'IsControllerTracked', 'CaptureUi', 'RenderFlatScreen', 'RenderStereoGameplay', 'RenderEye', 'SafeValue', 'get_HasInputFocus', 'get_CylinderProbeMode')
     'OpenXrFov' = @('Projection')
@@ -236,11 +238,14 @@ try {
     $submit = @($renderInstructions | Where-Object { $_.OpCode.Name -eq 'ldc.i4' -and $_.Operand -eq 0x51565652 })
     $capture = @($renderInstructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'CaptureUi' })
     $stereo = @($renderInstructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'RenderStereoGameplay' })
-    $pose = @($renderInstructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'QVVR_SetRenderPose' })
-    if ($begin.Count -ne 1 -or $submit.Count -ne 1 -or $capture.Count -ne 1 -or $stereo.Count -ne 1 -or
+    $pose = @($renderInstructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'QVVR_SetRenderPoseAndMode' })
+    if ($begin.Count -ne 1 -or $submit.Count -ne 1 -or $capture.Count -ne 1 -or $stereo.Count -ne 2 -or
         $pose.Count -ne 1 -or $pose[0].Offset -ge $begin[0].Offset -or
         $begin[0].Offset -ge $capture[0].Offset -or $capture[0].Offset -ge $stereo[0].Offset -or $stereo[0].Offset -ge $submit[0].Offset) {
         throw 'Render event order is not exact pose -> Begin -> UI -> stereo -> Submit.'
+    }
+    foreach ($call in $stereo) {
+        if ($call.Offset -le $capture[0].Offset -or $call.Offset -ge $submit[0].Offset) { throw 'Gameplay and selection stereo paths must share exact frame-event ordering.' }
     }
     Write-Host 'Render event IL ordering passed: exact pose -> Begin -> UI -> stereo -> Submit.'
     foreach ($type in $assembly.MainModule.Types) {

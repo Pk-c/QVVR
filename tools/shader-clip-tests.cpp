@@ -519,6 +519,175 @@ static void FeatherTest(ID3D11Device *device, ID3D11DeviceContext *context)
     printf("GPU feather: %u pixels passed; radial/caps, opaque/straight/premultiplied alpha, partial outputs, branch/loop returns, black/green fallback, zero-width, blend restoration.\n", checks);
     puts("GPU feather hot hooks: zero C++ allocations across 640 warmed synthetic frames.");
 }
+static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
+{
+    unsigned available=0,registered=0,replayed=0,composed=0;
+    qvvr::GetCapStats(available,registered,replayed,composed);
+    assert(available==1); // Optional pipeline must really compile, not silently skip.
+    // Synthetic closed meshes only. Actual production hooks + stencil entry
+    // pass/composition. Readback here is test-owned, NEVER a game eye texture.
+    const unsigned indices[] = {0,2,1,0,3,2,4,5,6,4,6,7,0,1,5,0,5,4,
+        3,7,6,3,6,2,0,4,7,0,7,3,1,2,6,1,6,5};
+    D3D11_BUFFER_DESC ibd = {};
+    ibd.ByteWidth = sizeof(indices); ibd.Usage = D3D11_USAGE_IMMUTABLE; ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA data = {indices,0,0}; ID3D11Buffer *ib = nullptr;
+    assert(SUCCEEDED(device->CreateBuffer(&ibd,&data,&ib)));
+    auto psCode = Compile("float4 main():SV_Target{return float4(1,0,0,1);}","ps_4_0");
+    ID3D11PixelShader *ps = nullptr;
+    assert(SUCCEEDED(device->CreatePixelShader(psCode->GetBufferPointer(),psCode->GetBufferSize(),nullptr,&ps)));
+    unsigned checks = 0;
+    for (int perspective=0;perspective<2;++perspective) for (int reverse=0;reverse<2;++reverse) for (int plane=0;plane<2;++plane)
+        for (int ms=1;ms<=2;++ms) for (int transparent=0;transparent<2;++transparent)
+    {
+        context->ClearState();
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width=td.Height=32;td.MipLevels=td.ArraySize=1;td.SampleDesc.Count=ms;
+        td.Format=DXGI_FORMAT_R8G8B8A8_UNORM;td.BindFlags=D3D11_BIND_RENDER_TARGET;
+        ID3D11Texture2D *color=nullptr,*depth=nullptr,*resolved=nullptr,*read=nullptr;
+        assert(SUCCEEDED(device->CreateTexture2D(&td,nullptr,&color)));
+        ID3D11RenderTargetView *target=nullptr;
+        assert(SUCCEEDED(device->CreateRenderTargetView(color,nullptr,&target)));
+        td.Format=DXGI_FORMAT_D32_FLOAT;td.BindFlags=D3D11_BIND_DEPTH_STENCIL;
+        assert(SUCCEEDED(device->CreateTexture2D(&td,nullptr,&depth)));
+        ID3D11DepthStencilView *dsv=nullptr;
+        assert(SUCCEEDED(device->CreateDepthStencilView(depth,nullptr,&dsv)));
+        td.SampleDesc.Count=1;td.Format=DXGI_FORMAT_R8G8B8A8_UNORM;td.BindFlags=0;
+        assert(SUCCEEDED(device->CreateTexture2D(&td,nullptr,&resolved)));
+        td.Usage=D3D11_USAGE_STAGING;td.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        assert(SUCCEEDED(device->CreateTexture2D(&td,nullptr,&read)));
+        char vsSource[512];
+        float pa=reverse?-.05f/(50-.05f):50/(50-.05f),pb=reverse?.05f*50/(50-.05f):-.05f*50/(50-.05f);
+        if(perspective)sprintf_s(vsSource,"float4 main(float3 v:POSITION):SV_Position{return float4(v.xy,%0.9g*(v.z+2)+%0.9g,v.z+2);}",pa,pb);
+        else sprintf_s(vsSource,"float4 main(float3 v:POSITION):SV_Position{return float4(v.x,v.y,%s,1);}",
+            reverse ? "1-(v.z+2)/4" : "(v.z+2)/4");
+        auto vsCode=Compile(vsSource,"vs_4_0"); ID3D11VertexShader *vs=nullptr;
+        assert(SUCCEEDED(device->CreateVertexShader(vsCode->GetBufferPointer(),vsCode->GetBufferSize(),nullptr,&vs)));
+        D3D11_INPUT_ELEMENT_DESC layoutDesc = {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D11_INPUT_PER_VERTEX_DATA,0};
+        ID3D11InputLayout *layout=nullptr;
+        assert(SUCCEEDED(device->CreateInputLayout(&layoutDesc,1,vsCode->GetBufferPointer(),vsCode->GetBufferSize(),&layout)));
+        // A cliff crossing entry, a wholly inside building, and an exterior
+        // solid that MUST NOT fill empty space. In plane mode, Z maps to Y.
+        ID3D11Buffer *vertices[3]={};
+        const float bounds[3][6]={{-.35f,.35f,-.4f,.4f,-1.8f,.6f},
+            {.45f,.65f,-.2f,.2f,-.25f,.2f},{-.7f,-.5f,-.4f,.4f,-1.8f,-1.5f}};
+        for(int box=0;box<3;++box)
+        {
+            const auto &b=bounds[box];
+            float v[8][3]={{b[0],b[2],b[4]},{b[1],b[2],b[4]},{b[1],b[3],b[4]},{b[0],b[3],b[4]},
+                {b[0],b[2],b[5]},{b[1],b[2],b[5]},{b[1],b[3],b[5]},{b[0],b[3],b[5]}};
+            D3D11_BUFFER_DESC vb={};vb.ByteWidth=sizeof(v);vb.Usage=D3D11_USAGE_IMMUTABLE;vb.BindFlags=D3D11_BIND_VERTEX_BUFFER;
+            D3D11_SUBRESOURCE_DATA vd={v,0,0}; assert(SUCCEEDED(device->CreateBuffer(&vb,&vd,&vertices[box])));
+        }
+        D3D11_DEPTH_STENCIL_DESC ds={};ds.DepthEnable=TRUE;ds.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ALL;
+        ds.DepthFunc=reverse?D3D11_COMPARISON_GREATER_EQUAL:D3D11_COMPARISON_LESS_EQUAL;
+        ID3D11DepthStencilState *depthState=nullptr;
+        assert(SUCCEEDED(device->CreateDepthStencilState(&ds,&depthState)));
+        qvvr::ClipParameters p={};
+        p.screenToCylinder[0]=1.f/16;p.screenToCylinder[12]=-1;
+        if(plane){p.screenToCylinder[9]=reverse?-4.f:4.f;p.screenToCylinder[13]=reverse?2.f:-2.f;
+            p.screenToCylinder[6]=-1.f/16;p.screenToCylinder[14]=1;}
+        else{p.screenToCylinder[5]=-1.f/16;p.screenToCylinder[13]=1;
+            p.screenToCylinder[10]=reverse?-4.f:4.f;p.screenToCylinder[14]=reverse?2.f:-2.f;}
+        p.screenToCylinder[15]=1;p.limits[0]=.64f;p.limits[1]=.8f;p.limits[3]=transparent?0.f:1.f;
+        if(perspective)
+        {
+            p.screenToCylinder[0]=pb/16;p.screenToCylinder[12]=-pb;
+            p.screenToCylinder[5]=plane?0.f:-pb/16;p.screenToCylinder[6]=plane?-pb/16:0.f;
+            p.screenToCylinder[9]=plane?-2.f:0.f;p.screenToCylinder[10]=plane?0.f:-2.f;
+            p.screenToCylinder[13]=plane?2*pa+pb:pb;p.screenToCylinder[14]=plane?pb:2*pa+pb;
+            p.screenToCylinder[11]=1;p.screenToCylinder[15]=-pa;
+        }
+        qvvr::SetShaderClipTargets(color,color);
+        qvvr::RegisterCapMesh(ib); // Cold resource allocation happens here only.
+        auto frame=[&](bool enable,bool instanced,bool unbind) {
+            context->OMSetRenderTargets(1,&target,dsv);
+            context->OMSetDepthStencilState(depthState,23);
+            context->OMSetBlendState(nullptr,nullptr,0xffffffff);
+            context->RSSetState(nullptr);
+            D3D11_VIEWPORT viewport={0,0,32,32,0,1};context->RSSetViewports(1,&viewport);
+            const float empty[]={0,transparent?0.f:1.f,0,transparent?0.f:1.f};
+            context->ClearRenderTargetView(target,empty);
+            context->ClearDepthStencilView(dsv,D3D11_CLEAR_DEPTH,reverse?0.f:1.f,0);
+            context->IASetInputLayout(layout);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            context->IASetIndexBuffer(ib,DXGI_FORMAT_R32_UINT,0);
+            context->VSSetShader(vs,nullptr,0);
+            qvvr::BeginShaderClip(p,enable,reverse!=0,transparent!=0);
+            context->PSSetShader(ps,nullptr,0);
+            for(int box=0;box<3;++box){auto vb=vertices[instanced?2-box:box];UINT stride=12,offset=0;context->IASetVertexBuffers(0,1,&vb,&stride,&offset);
+                auto table=*reinterpret_cast<void *volatile **>(context);
+                if(instanced)reinterpret_cast<void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *,UINT,UINT,UINT,INT,UINT)>(table[20])(context,36,1,0,0,0);
+                else reinterpret_cast<void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *,UINT,UINT,INT)>(table[12])(context,36,0,0);}
+            if(instanced)qvvr::CompositeShaderCaps(); // Actual BeforeForwardAlpha event.
+            if(unbind)context->OMSetRenderTargets(0,nullptr,nullptr); // Camera.Render target restoration regression.
+            qvvr::EndShaderClip();
+            if(!unbind){ID3D11PixelShader *actual=nullptr;context->PSGetShader(&actual,nullptr,nullptr);
+                if(actual!=ps)printf("GPU caps state failed enabled=%d instanced=%d reverse=%d plane=%d ms=%d alpha=%d actual=%p expected=%p\n",enable,instanced,reverse,plane,ms,transparent,actual,ps);
+                assert(actual==ps);actual->Release();
+                UINT ref;ID3D11DepthStencilState *actualDepth=nullptr;context->OMGetDepthStencilState(&actualDepth,&ref);
+                assert(actualDepth==depthState&&ref==23);actualDepth->Release();}
+        };
+        for(int mode=0;mode<4;++mode)
+        {
+            frame(mode!=0,mode==2,mode==3);
+            if(ms>1)context->ResolveSubresource(resolved,0,color,0,DXGI_FORMAT_R8G8B8A8_UNORM);
+            else context->CopyResource(resolved,color);
+            context->CopyResource(read,resolved);
+            D3D11_MAPPED_SUBRESOURCE mapped={};assert(SUCCEEDED(context->Map(read,0,D3D11_MAP_READ,0,&mapped)));
+            for(unsigned y=0;y<32;++y)for(unsigned x=0;x<32;++x)
+            {
+                auto expected=[&](float sx,float sy) {
+                    float qx=sx/16-1,qy=1-sy/16;
+                    float origin[]={perspective?0.f:qx,perspective?0.f:qy,-2.f};
+                    float ray[]={perspective?qx:0.f,perspective?qy:0.f,perspective?1.f:4.f};
+                    float n[]={origin[0],plane?origin[2]:origin[1],plane?origin[1]:origin[2]};
+                    float d[]={ray[0],plane?ray[2]:ray[1],plane?ray[1]:ray[2]};
+                    float a=d[0]*d[0]+d[2]*d[2],b=n[0]*d[0]+n[2]*d[2],c=n[0]*n[0]+n[2]*n[2]-.64f;
+                    float enter=-1e20f,leave=1e20f;
+                    if(a<1e-12f){if(c>0)return 0;}else{
+                        float h=b*b-a*c;if(h<0)return 0;h=sqrtf(h);enter=(-b-h)/a;leave=(-b+h)/a;}
+                    if(fabsf(d[1])<1e-12f){if(fabsf(n[1])>.8f)return 0;}else{
+                        float t0=(-.8f-n[1])/d[1],t1=(.8f-n[1])/d[1];
+                        enter=fmaxf(enter,fminf(t0,t1));leave=fminf(leave,fmaxf(t0,t1));}
+                    if(leave<enter||leave<0)return 0;
+                    bool cut=false,inside=false;
+                    for(const auto &box:bounds){float begin=-1e20f,end=1e20f;
+                        for(int axis=0;axis<3;++axis){if(fabsf(ray[axis])<1e-12f){if(origin[axis]<box[axis*2]||origin[axis]>box[axis*2+1])end=-1e20f;}
+                            else{float t0=(box[axis*2]-origin[axis])/ray[axis],t1=(box[axis*2+1]-origin[axis])/ray[axis];
+                                begin=fmaxf(begin,fminf(t0,t1));end=fminf(end,fmaxf(t0,t1));}}
+                        if(end<begin||end<0)continue;
+                        if(begin<enter&&end>enter&&enter>0)cut=true;
+                        if(begin>=enter&&begin<=leave)inside=true;}
+                    return cut&&mode!=0?1:inside?2:0;
+                };
+                int expect=expected(x+.5f,y+.5f);
+                // Exclude only raster edges whose subsamples have different results.
+                if(expected(x+.2f,y+.2f)!=expect||expected(x+.8f,y+.8f)!=expect||
+                    expected(x+.2f,y+.8f)!=expect||expected(x+.8f,y+.2f)!=expect)continue;
+                auto pixel=static_cast<unsigned char*>(mapped.pData)+y*mapped.RowPitch+x*4;
+                unsigned r=expect==2?255:0,g=expect==0&&!transparent?255:0,a=expect!=0||!transparent?255:0;
+                if(pixel[0]!=r||pixel[1]!=g||pixel[2]!=0||pixel[3]!=a)
+                {printf("GPU caps failed perspective=%d reverse=%d plane=%d ms=%d alpha=%d mode=%d pixel=%u,%u got=%u,%u,%u,%u expected=%u,%u,0,%u\n",
+                    perspective,reverse,plane,ms,transparent,mode,x,y,pixel[0],pixel[1],pixel[2],pixel[3],r,g,a);std::exit(5);}
+                ++checks;
+            }
+            context->Unmap(read,0);
+        }
+        // No managed path here; no C++ allocation in warmed production hooks.
+        hotAllocations.store(0);trackAllocations.store(true);
+        for(int i=0;i<8;++i)frame(true,false,false);
+        trackAllocations.store(false);assert(hotAllocations.load()==0);
+        qvvr::ClearCapMeshes();qvvr::SetShaderClipTargets(nullptr,nullptr);
+        context->ClearState();
+        for(auto vb:vertices)vb->Release();
+        depthState->Release();layout->Release();vs->Release();vsCode->Release();
+        target->Release();dsv->Release();color->Release();depth->Release();resolved->Release();read->Release();
+    }
+    ps->Release();psCode->Release();ib->Release();
+    qvvr::GetCapStats(available,registered,replayed,composed);
+    assert(registered==0&&replayed==32*11*3&&composed==32*11);
+    printf("GPU caps: %u pixels passed; perspective/orthographic, side/height cuts, empty exterior, untouched interior, forward/reversed Z, 1x/2x MSAA, alpha/green, disabled mode, indexed/instanced, target unbind, state restoration.\n",checks);
+    puts("GPU caps hot hooks: zero C++ allocations across 256 warmed synthetic frames.");
+}
 int main(int argc, char **argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -592,6 +761,7 @@ int main(int argc, char **argv)
     puts("OpenXR GPU-copy variants: 6 compiled and validated (Y flip, Gamma/Linear, alpha preserved).");
     RenderTest(device, context);
     FeatherTest(device, context);
+    CylinderCapTest(device, context);
     context->Release();
     device->Release();
     puts("Shader clipping bytecode and GPU validation passed.");

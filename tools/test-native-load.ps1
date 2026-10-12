@@ -43,13 +43,16 @@ try {
         }
         $modules.Add($module)
     }
-    foreach ($export in @('QVVR_GetRenderEventFunc', 'QVVR_InstallShaderClip', 'QVVR_ConfigureOpenXr', 'QVVR_InitializeExclusiveOpenXr', 'QVVR_PrepareOpenXrFrame', 'QVVR_CancelOpenXrFrame', 'QVVR_GetClipBindingStats', 'QVVR_WriteClipDiagnostic')) {
+    foreach ($export in @('QVVR_GetRenderEventFunc', 'QVVR_InstallShaderClip', 'QVVR_ConfigureOpenXr', 'QVVR_InitializeExclusiveOpenXr', 'QVVR_PrepareOpenXrFrame', 'QVVR_CancelOpenXrFrame', 'QVVR_GetClipBindingStats', 'QVVR_WriteClipDiagnostic', 'QVVR_SetCylinderCapOptions', 'QVVR_RegisterCapMesh', 'QVVR_ClearCapMeshes', 'QVVR_GetCapStats')) {
         if ([QVVRNativeLoadTest]::GetProcAddress($modules[2], $export) -eq [IntPtr]::Zero) {
             throw "Missing native bridge export: $export"
         }
     }
     if ([QVVRNativeLoadTest]::CheckColdBootstrap($modules[2]) -ne 0) {
         throw 'Null-texture bootstrap must return false without touching the GPU.'
+    }
+    if ([QVVRNativeLoadTest]::GetProcAddress($modules[2], 'QVVR_SetRenderPoseAndMode') -eq [IntPtr]::Zero) {
+        throw 'Missing frame-latched opaque selection mode export.'
     }
     $bootstrapSource = Get-Content -LiteralPath (Join-Path $root 'src\QVVR\OpenVrManager.cs') -Raw
     if ($bootstrapSource -match 'extern\s+int\s+QVVR_InstallShaderClip') {

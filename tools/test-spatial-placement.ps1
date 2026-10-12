@@ -40,6 +40,7 @@ namespace UnityEngine {
   public static float Dot(Quaternion a,Quaternion b){return System.Numerics.Quaternion.Dot(a.N(),b.N());}
   public static Quaternion Lerp(Quaternion a,Quaternion b,float t){return U(System.Numerics.Quaternion.Lerp(a.N(),b.N(),t));}
   public static Quaternion Slerp(Quaternion a,Quaternion b,float t){return U(System.Numerics.Quaternion.Slerp(a.N(),b.N(),t));}
+  public static Quaternion SlerpUnclamped(Quaternion a,Quaternion b,float t){return Slerp(a,b,t);}
   public static float Angle(Quaternion a,Quaternion b){return 2f*(float)System.Math.Acos(System.Math.Min(1f,System.Math.Abs(System.Numerics.Quaternion.Dot(a.N(),b.N()))))*180f/(float)System.Math.PI;}
   public static Quaternion AngleAxis(float a,Vector3 v){return U(System.Numerics.Quaternion.CreateFromAxisAngle(new System.Numerics.Vector3(v.x,v.y,v.z),a*(float)System.Math.PI/180));}
   public static Quaternion operator*(Quaternion a,Quaternion b){return U(a.N()*b.N());}
@@ -53,6 +54,7 @@ namespace UnityEngine {
  public static class Mathf {
   public static float Max(float a,float b){return System.Math.Max(a,b);}
   public static float Abs(float x){return System.Math.Abs(x);}
+  public static float Sqrt(float x){return (float)System.Math.Sqrt(x);}
   public static float Clamp(float x,float a,float b){return System.Math.Max(a,System.Math.Min(b,x));}
  }
 }
@@ -129,8 +131,16 @@ namespace QVVR {
    var input=SpatialMath.Movement(new Vector2(.2f,.3f),identity,identity,identity);
    Check(Near(input.x,.2f)&&Near(input.y,.3f),"Analogue magnitude must not be boosted.");
    Check(Near(SpatialMath.Movement(Vector2.zero,identity,yaw,identity).magnitude,0),"Idle input remains idle.");
-   var offset=SpatialMath.VisibleOffset(new Vector3(100,-100,-5),1.6f);
-   Check(offset.z>=1.5f&&System.Math.Abs(offset.x)<=offset.z*.35f&&offset.y>=-offset.z*.35f,"Offscreen old layout corrected to visible front cone.");
+   var offset=SpatialMath.VisibleOffset(new Vector3(100,-100,-5),.8f,.8f);
+   Check(offset.z>=1.25f&&System.Math.Abs(offset.x)<=offset.z*.35f&&offset.y>=-offset.z*.35f,"Offscreen old layout corrected to visible front cone.");
+   var closer=SpatialMath.VisibleOffset(new Vector3(.2f,-.2f,.65f),.9f,.9f);
+   Check(closer.z>1.50f&&closer.z<1.51f&&Near(closer.x,.2f)&&Near(closer.y,-.2f),"Saved short reach starts around 1.5m rather than the old 2.12m; preserve lateral/vertical placement.");
+   var far=SpatialMath.VisibleOffset(new Vector3(.1f,-.2f,4),.8f,.8f);
+   Check(Near(far.z,4)&&Near(far.x,.1f)&&Near(far.y,-.2f),"Do not shorten intentionally distant saved layouts.");
+   var tall=SpatialMath.VisibleOffset(Vector3.zero,1,4);
+   Check(tall.z>(float)System.Math.Sqrt(5),"Tall/tilted dioramas retain bounding-sphere clearance.");
+   var invalid=SpatialMath.VisibleOffset(new Vector3(float.NaN,0,0),float.NaN,float.NaN);
+   Check(Near(invalid.z,1.6f)&&Near(invalid.y,-.35f),"Invalid entry values recover to a finite front placement.");
    Check(Near(SpatialMath.EntryScale(40,1.6f,1),.04f),"First huge level fitted to reasonable physical size.");
    Check(Near(80*SpatialMath.EntryScale(80,.8f,2)/2,.8f),"Next level reuses saved physical size despite changed bounds/units.");
    Check(SpatialMath.EntryScale(40,100,1)<=.1f,"Entry fit clamps huge saved preference.");
@@ -142,6 +152,19 @@ namespace QVVR {
     var observed=head+state.Rotation*((center-gameEye)/units);
     Check(Near(observed,state.Position),"Moving head must not move placed cylinder center.");
    }
+   state.Stop();state.Place(new Vector3(0,0,2),identity,.05f);
+   state.Update(true,true,left,identity,right,identity,1.15f,1.1f);
+   state.Update(true,true,left+delta,identity,right+delta,identity,3f,3f);
+   Check(Near(state.Position,new Vector3(0,0,2)+delta*1.15f),"Translation gain is 15% faster and stays latched while held.");
+   Check(Near(state.Scale,.05f),"Sensitivity does not change resize.");
+   state.Stop();state.Place(new Vector3(0,0,2),identity,.05f);
+   state.Update(true,true,left,identity,right,identity,1.15f,1.1f);
+   var turn=Quaternion.AngleAxis(30,Vector3.up);
+   state.Update(true,true,turn*left,turn,turn*right,turn,1.15f,1.1f);
+   var faster=Quaternion.AngleAxis(33,Vector3.up);
+   Check(Near(state.Rotation*Vector3.forward,faster*Vector3.forward),"Rotation gain is 10% faster, not doubled between wrists/baseline.");
+   Check(Near(state.Position,faster*new Vector3(0,0,2)),"Amplified rotation retains the shared grab pivot.");
+   Check(Near(SpatialMath.Gain(float.NaN),1)&&Near(SpatialMath.Gain(100),3)&&Near(SpatialMath.Gain(-1),.25f),"Invalid sensitivity values are safe.");
    state.Reset();Check(!state.Valid,"Level reset triggers restored entry layout.");
    return checks;
   }

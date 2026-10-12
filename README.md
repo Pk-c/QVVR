@@ -14,7 +14,10 @@ fallback; compatible Frame runtimes can use exclusive OpenXR passthrough.
 - Saved layout with visible level-entry placement and a manual recovery action.
 - Viewer-relative character movement and separate walk/jump input mappings.
 - Upright 2D title/menu panels and an independently sized gameplay HUD.
+- Full stereo costume/map selections in the verified intro scene, without diorama clipping.
 - Decorative cloud removal without disabling rain-cloud gameplay mechanics.
+- Per-eye depth support for QV's known water/ink shaders.
+- Optional experimental black cross-sections for clipped opaque mesh solids.
 - Original game files remain untouched; desktop rendering remains available.
 
 This is a prototype, not a finished VR port. Passthrough and earlier diorama
@@ -91,6 +94,10 @@ when updating manually. To uninstall, close QV and run the ownership-checked
 The settings menu uses up/down to select and left/right to adjust. Closing saves
 settings. The game simulation is not paused while this menu is open.
 
+Two-hand translation defaults to **1.15x**, rotation to **1.10x**; head tracking
+and separation-based resize are unchanged. `Controls.DioramaMoveSensitivity`
+and `Controls.DioramaRotationSensitivity` allow 0.25-3x, sampled at grab start.
+
 **Diorama size** supports 0.001-10 times the base world size, independently of FOV.
 Level entry restores physical size/orientation/offset relative to the wearer's
 upright heading, with front/visibility safeguards. First entry fits a reasonable
@@ -102,6 +109,19 @@ subsequent game-camera turns.
 panel remains physically anchored while open. HUD size/distance are independent
 of title/menu panel settings.
 
+**3D costume/map menus** renders the verified `001_Intro` costume/stage states
+directly in stereo. Title/loading/other states retain 2D capture. Selections use
+QV's scripted camera plus VR head tracking, not saved gameplay placement/size,
+cylinder clipping, grips, or passthrough. Camera-space map labels are captured
+alongside overlay UI. Turn the option off to recover the old flat presentation.
+This experimental option is off by default: visual framing, state transitions
+and CPU/GPU costs still need Frame testing.
+
+Initial diorama clearance uses its physical radius/height bounding sphere plus
+0.5 m, rather than nearly a full diameter. Default first-entry depth is 1.6 m.
+Saved lateral/vertical offsets and intentionally distant layouts are preserved;
+only too-close/behind/offscreen entries are adjusted for visibility and clearance.
+
 ## Quality and performance
 
 Profiles: **Performance** (0.85 eye resolution), **Balanced** (1.0), and
@@ -109,6 +129,18 @@ Profiles: **Performance** (0.85 eye resolution), **Balanced** (1.0), and
 profiles apply on the next manual launch. HUD capture defaults to 36 Hz, menus
 to 72 Hz, and UI capture to 2880x1620 with GPU mipmaps. Realtime shadows are
 disabled in VR by default and restored on desktop fallback.
+
+`Diorama.LiquidDepthFix=true` requests fresh per-eye depth when a cached, known
+liquid renderer is active. This addresses missing/stale screen-space depth;
+it does not freeze/fake camera position or guarantee every liquid artifact is fixed.
+The extra opaque depth pass needs a headset performance comparison.
+
+**Black cut surfaces (experimental)** enables GPU stencil cross-sections of
+registered opaque mesh geometry, without a solid black cylinder hiding the scene.
+It is **off by default** until Frame correctness/performance testing. It costs an
+extra geometry pass and private GPU depth/stencil targets when enabled.
+Open/non-manifold meshes, camera-inside-solid views, dynamic geometry and batching
+can limit coverage; this is not a general-purpose watertight mesh repair.
 
 The target is 72 Hz: a 13.89 ms frame budget. Measure CPU and GPU frame times on
 the actual device; sparse log samples are not averages or percentiles.

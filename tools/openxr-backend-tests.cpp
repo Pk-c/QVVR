@@ -18,6 +18,7 @@ static ID3D11Device *gpu;
 static ID3D11DeviceContext *ctx;
 static bool alpha = true, stageSupported = true, render = true, tracking = true, failWait = false;
 static bool running = false, frameExtension = true;
+static bool expectOpaqueScene = false;
 static int phase = 0, waits = 0, begins = 0, ends = 0, sessions = 0, destroyed = 0, localSpaces = 0;
 static int eventIndex = 0, eventCount = 2, swapIndex = 0, actionIndex = 0, handIndex = 0;
 static int suggestions = 0, copies = 0;
@@ -133,16 +134,16 @@ XrResult XRAPI_CALL xrEndFrame(XrSession, const XrFrameEndInfo *e) {
     if(e->layerCount) {
         assert(e->layerCount==1); auto p=reinterpret_cast<const XrCompositionLayerProjection*>(e->layers[0]);
         assert(p->viewCount==2 && p->space==Handle<XrSpace>(10));
-        assert(p->layerFlags==XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT);
+        assert(p->layerFlags==(expectOpaqueScene ? 0 : XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT));
         assert(Near(p->views[0].pose.position.z,3.032f) && Near(p->views[1].pose.position.z,2.968f));
         assert(Near(p->views[0].fov.angleLeft,-.9f));
     }
     phase=0; ends++; return XR_SUCCESS;
 }
 }
-static ID3D11Texture2D *Source() {
+static ID3D11Texture2D *Source(bool opaqueColor = false) {
     // Entirely synthetic 32x32 image: lower half opaque, upper half transparent.
-    uint32_t pixels[1024]; for(int y=0;y<32;y++) for(int x=0;x<32;x++) pixels[y*32+x]=y<16?0u:0xffffffffu;
+    uint32_t pixels[1024]; for(int y=0;y<32;y++) for(int x=0;x<32;x++) pixels[y*32+x]=y<16?(opaqueColor ? 0x00808080u : 0u):0xffffffffu;
     D3D11_TEXTURE2D_DESC d={}; d.Width=d.Height=32; d.MipLevels=d.ArraySize=d.SampleDesc.Count=1;
     d.Format=DXGI_FORMAT_B8G8R8A8_UNORM; d.BindFlags=D3D11_BIND_SHADER_RESOURCE;
     D3D11_SUBRESOURCE_DATA data={pixels,128,0}; ID3D11Texture2D *texture=nullptr;
@@ -169,6 +170,25 @@ int main() {
     assert(qvvr::SubmitOpenXrFrame(texture,texture,unusedHead,true) && copies==2);
     CheckSyntheticAlpha(swaps[0].texture); CheckSyntheticAlpha(swaps[1].texture);
     assert(!qvvr::SubmitOpenXrFrame(texture,texture,unusedHead,true));
+    // Opaque selection: original RGB may have unused zero alpha. Gamma copy
+    // must decode that RGB normally, not divide by zero/premultiplied alpha.
+    auto colored=Source(true); qvvr::SetOpenXrColorSpace(true,false);
+    assert(qvvr::PrepareOpenXrFrame(frame)==1&&qvvr::BeginOpenXrFrame(colored));
+    expectOpaqueScene=true;
+    assert(qvvr::SubmitOpenXrFrame(colored,colored,unusedHead,true,true));
+    expectOpaqueScene=false;
+    D3D11_TEXTURE2D_DESC rd={}; swaps[0].texture->GetDesc(&rd);rd.Usage=D3D11_USAGE_STAGING;rd.BindFlags=0;rd.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D *readOpaque=nullptr;assert(SUCCEEDED(gpu->CreateTexture2D(&rd,nullptr,&readOpaque)));
+    ctx->CopyResource(readOpaque,swaps[0].texture);D3D11_MAPPED_SUBRESOURCE mapped={};
+    assert(SUCCEEDED(ctx->Map(readOpaque,0,D3D11_MAP_READ,0,&mapped)));
+    auto last=static_cast<unsigned char*>(mapped.pData)+31*mapped.RowPitch;
+    // Linear shader output (~55/255) is stored through an sRGB RTV: encoded
+    // bytes must round-trip to 128, NOT white from alpha division.
+    assert(abs(int(last[0])-128)<=1&&abs(int(last[1])-128)<=1&&abs(int(last[2])-128)<=1&&last[3]==0);
+    ctx->Unmap(readOpaque,0);readOpaque->Release();colored->Release();
+    assert(qvvr::PrepareOpenXrFrame(frame)==1&&qvvr::BeginOpenXrFrame(texture));
+    assert(qvvr::SubmitOpenXrFrame(texture,texture,unusedHead,true));
+    CheckSyntheticAlpha(swaps[0].texture); // Back to gameplay: passthrough restored.
     gripValue=0; assert(qvvr::PrepareOpenXrFrame(frame)==1 && (frame.rightHand.buttons&8)!=0 && frame.rightHand.grip==0);
     qvvr::CancelOpenXrFrame(); gripValue=.9f;
     render=false; assert(!qvvr::PrepareOpenXrFrame(frame) && phase==0); render=true;

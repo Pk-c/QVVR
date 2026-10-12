@@ -15,8 +15,12 @@ bool PatchCylinderShader(const void *bytes, size_t length, std::vector<std::uint
                          bool opaque = false, bool premultiplied = false);
 bool InstallShaderClip(ID3D11Device *device);
 void SetShaderClipTargets(ID3D11Texture2D *left, ID3D11Texture2D *right);
-void BeginShaderClip(const ClipParameters &parameters);
+void BeginShaderClip(const ClipParameters &parameters, bool caps = false, bool reversedZ = false, bool transparent = false);
 void EndShaderClip();
+void CompositeShaderCaps();
+void RegisterCapMesh(ID3D11Buffer *indices);
+void ClearCapMeshes();
+void GetCapStats(unsigned &available, unsigned &registered, unsigned &replayed, unsigned &composed);
 void GetShaderClipStats(unsigned &patched, unsigned &rejected, unsigned &unknown, unsigned &depthOnly);
 void GetShaderClipBindingStats(unsigned &materials, unsigned &otherContexts);
 // One-shot buffer/state diagnostic. Never reads an eye/color/depth texture.

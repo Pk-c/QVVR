@@ -1,6 +1,20 @@
 QVVR 0.1.0 - Experimental VR mod
 ================================
 
+Costume/map selections in 001_Intro can render in full stereo without diorama
+clipping or passthrough. Title/loading/other states remain 2D. Use 3D costume/map
+menus in settings to test it or recover flat capture if framing/transitions fail.
+The stereo selection option is off by default until Frame measurement/testing.
+First-entry default depth is 1.6 m; closer clearance uses actual cylinder bounds.
+Saved X/Y, size, rotation and intentionally distant placement are preserved.
+
+Two-hand placement sensitivity: translation 1.15x, rotation 1.10x. Resize and
+head tracking are unchanged. LiquidDepthFix adds fresh per-eye depth only for
+known active liquid shaders; verify water/ink on the headset.
+Black cut surfaces (experimental) is an opt-in settings-menu stencil cap mode.
+It is off by default until Frame correctness/performance testing. Open meshes
+and incomplete native batch registration can limit coverage; extra GPU work.
+
 Install the locally built archive beside QV.exe. Close QV before deployment;
 start it manually afterward. Preserve BepInEx/config/dev.qvvr.prototype.cfg
 when updating manually. USB/SSH deployment preserves it automatically.
