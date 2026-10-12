@@ -1,0 +1,31 @@
+QVVR includes or depends on the following third-party software in release packages:
+
+BepInEx 5.4.23.5
+Copyright BepInEx contributors
+License: GNU Lesser General Public License v2.1
+https://github.com/BepInEx/BepInEx
+
+OpenVR SDK 2.15.6
+Copyright Valve Corporation
+License: BSD 3-Clause License
+https://github.com/ValveSoftware/openvr
+
+QVVR does not distribute QV game assemblies or assets.
+
+OpenXR SDK loader 1.1.47 (private DLL; NuGet OpenXR package)
+Copyright The Khronos Group Inc. and contributors
+License: Apache License 2.0
+https://github.com/KhronosGroup/OpenXR-SDK
+License text: BepInEx/plugins/QVVR/licenses/OpenXR.txt
+
+Microsoft DirectX-Headers token definitions
+Copyright Microsoft Corporation
+License: MIT
+https://github.com/microsoft/DirectX-Headers
+License text: BepInEx/plugins/QVVR/licenses/DirectX-Headers.txt
+
+Microsoft DirectXShaderCompiler DxilHash checksum implementation
+Copyright Microsoft Corporation; LLVM/MD5 notices apply
+License: University of Illinois/NCSA Open Source License
+https://github.com/microsoft/DirectXShaderCompiler
+License text: BepInEx/plugins/QVVR/licenses/DirectX-Hash.txt

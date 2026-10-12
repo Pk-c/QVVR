@@ -1,0 +1,7 @@
+WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11
+
+If the game freezes during eye submission, test this diagnostic fallback:
+
+WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11 -force-gfx-direct
+
+The fallback serializes Unity graphics work and can reduce performance. Do not use it unless required.
