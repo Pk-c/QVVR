@@ -35,10 +35,13 @@ class CylinderCaps
         D3D11_TEXTURE2D_DESC desc = {};
     } targets[2], frameTarget;
     std::mutex targetMutex, meshMutex;
-    std::vector<ID3D11Buffer *> meshes; // Reserved/changed on cold registration only.
+    struct Mesh { ID3D11Buffer *buffer; CapBounds bounds; bool bounded; };
+    std::vector<Mesh> meshes; // Reserved/changed on cold registration only.
+    CapCullVolume cullVolume;
     Target *target = nullptr;
     bool initialized = false, rendered = false, dirty = false;
     std::atomic<unsigned> meshCount{0}, volumeDraws{0}, composites{0};
+    std::atomic<unsigned> skippedVolumes{0};
     ID3D11RenderTargetView *savedTargets[8] = {};
     ID3D11DepthStencilView *savedDepthView = nullptr;
     ID3D11DepthStencilState *savedDepth = nullptr;
@@ -238,13 +241,24 @@ public:
         device->CreateShaderResourceView(t.depth, &sd, &t.stencil);
     }
 
-    void RegisterMesh(ID3D11Buffer *mesh)
+    void RegisterMesh(ID3D11Buffer *mesh, const CapBounds *bounds = nullptr)
     {
         if (!mesh) return;
         {
             std::lock_guard<std::mutex> lock(meshMutex);
-            for (auto item : meshes) if (item == mesh) return;
-            mesh->AddRef(); meshes.push_back(mesh);
+            for (auto &item : meshes) if (item.buffer == mesh)
+            {
+                // Static batching/shared index buffers: union ALL contributors.
+                // A single moving/unbounded contributor disables pruning.
+                item.bounded = item.bounded && bounds && ValidCapBounds(*bounds);
+                if (item.bounded) for (int i = 0; i < 3; ++i)
+                {
+                    item.bounds.minimum[i] = (std::min)(item.bounds.minimum[i], bounds->minimum[i]);
+                    item.bounds.maximum[i] = (std::max)(item.bounds.maximum[i], bounds->maximum[i]);
+                }
+                return;
+            }
+            mesh->AddRef(); meshes.push_back({mesh, bounds ? *bounds : CapBounds{}, bounds && ValidCapBounds(*bounds)});
             meshCount.store(static_cast<unsigned>(meshes.size()));
         }
         std::lock_guard<std::mutex> lock(targetMutex);
@@ -254,7 +268,7 @@ public:
     {
         {
             std::lock_guard<std::mutex> lock(meshMutex);
-            for (auto item : meshes) item->Release();
+            for (auto item : meshes) item.buffer->Release();
             meshes.clear();
             meshCount.store(0);
         }
@@ -262,9 +276,10 @@ public:
         for (auto &t : targets) { Drop(t.stencil); Drop(t.view); Drop(t.depth); }
     }
 
-    void Begin(const ClipParameters &clip, bool enabled, bool reversed, bool transparent)
+    void Begin(const ClipParameters &clip, bool enabled, bool reversed, bool transparent, const CapCullVolume *cull = nullptr)
     {
         constants.clip = clip;
+        cullVolume = cull ? *cull : CapCullVolume{};
         constants.options[0] = reversed ? 1.f : 0.f;
         constants.options[1] = transparent ? 1.f : 0.f;
         constants.options[2] = enabled ? 1.f : 0.f;
@@ -284,7 +299,12 @@ public:
         bool eligible = false;
         {
             std::lock_guard<std::mutex> lock(meshMutex);
-            for (auto mesh : meshes) if (mesh == indices) { eligible = true; break; }
+            for (const auto &mesh : meshes) if (mesh.buffer == indices)
+            {
+                eligible = !mesh.bounded || CapMayIntersect(mesh.bounds, cullVolume);
+                if (!eligible) skippedVolumes.fetch_add(1);
+                break;
+            }
         }
         Drop(indices);
         if (!eligible) return false;
@@ -371,6 +391,12 @@ public:
     {
         available = initialized ? 1 : 0; registered = meshCount.load();
         replayed = volumeDraws.load(); composed = composites.load();
+    }
+    void CullStats(unsigned &bounded, unsigned &skipped)
+    {
+        std::lock_guard<std::mutex> lock(meshMutex);
+        bounded = 0; for (const auto &mesh : meshes) if (mesh.bounded) ++bounded;
+        skipped = skippedVolumes.load();
     }
 };
 } // namespace qvvr

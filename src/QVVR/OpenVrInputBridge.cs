@@ -13,6 +13,7 @@ namespace QVVR
     internal sealed class OpenVrInputBridge : MonoBehaviour
     {
         private const uint Right = 1, Left = 2, Up = 4, Down = 8, Confirm = 16, Back = 32;
+        private const uint LeftShoulder = ControllerButtonPolicy.LeftShoulder, RightShoulder = ControllerButtonPolicy.RightShoulder;
         private static OpenVrInputBridge active;
         private static readonly uint ControllerStateSize = (uint)Marshal.SizeOf(typeof(VRControllerState_t));
         private CVRSystem system;
@@ -28,6 +29,7 @@ namespace QVVR
         private VrSettingsMenu settingsMenu;
         private bool previousStickChord;
         private bool suppressUntilNeutral;
+        private bool previousShoulderMode;
         private readonly GripGestureState gripGesture = new GripGestureState();
         private OpenVrRenderer renderer;
         private static int movementQueryDepth;
@@ -83,7 +85,7 @@ namespace QVVR
                         finalizer: new HarmonyMethod(typeof(OpenVrInputBridge), "EndMovementQuery"));
                 }
                 active = this;
-                Plugin.Log.LogInfo("QVVR Rewired input bridge active: stick navigation, A/right trigger confirm, B back.");
+                Plugin.Log.LogInfo("QVVR Rewired input bridge active: sticks, A confirm, B back; gameplay triggers L/R (both for LB+RB), menu/cinema right trigger confirm.");
             }
             catch (Exception exception)
             {
@@ -160,10 +162,14 @@ namespace QVVR
             if (horizontal < -0.5f) held |= Left;
             if (vertical > 0.5f) held |= Up;
             if (vertical < -0.5f) held |= Down;
-            if ((rightState.ulButtonPressed & ((1UL << 7) | (1UL << 33))) != 0 || rightState.rAxis1.x > 0.55f)
-                held |= Confirm;
-            if ((rightState.ulButtonPressed & (1UL << 1)) != 0)
-                held |= Back;
+            bool shoulders = renderer != null && renderer.UseGameShoulders && (settingsMenu == null || !settingsMenu.Visible);
+            // A held menu/cinema confirm must not become an immediate shoulder
+            // command when presentation changes, or vice versa.
+            if (shoulders != previousShoulderMode) suppressUntilNeutral = true;
+            previousShoulderMode = shoulders;
+            held |= ControllerButtonPolicy.Buttons(hasLeft ? leftState.ulButtonPressed : 0,
+                hasLeft ? leftState.rAxis1.x : 0f, hasRight ? rightState.ulButtonPressed : 0,
+                hasRight ? rightState.rAxis1.x : 0f, shoulders);
 
             // The A press used to dismiss Steam's overlay must not also choose
             // a game menu item when scene focus returns.
@@ -220,6 +226,8 @@ namespace QVVR
                 case "Fire1": return negative ? 0 : Confirm;
                 case "Pause":
                 case "Fire2": return negative ? 0 : Back;
+                case "L": return negative ? 0 : LeftShoulder;
+                case "R": return negative ? 0 : RightShoulder;
                 default: return 0;
             }
         }

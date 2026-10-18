@@ -4,17 +4,6 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $policy = Get-Content -LiteralPath (Join-Path $root 'src/QVVR/LiquidDepthPolicy.cs') -Raw
 $fixture = @'
-namespace UnityEngine {
- public struct Scene { public bool Valid,isLoaded; public bool IsValid(){return Valid;} }
- public class GameObject { public Scene scene; public bool activeInHierarchy=true; }
- public class Shader { public string name; }
- public class Material { public Shader shader; }
- public class Renderer { public GameObject gameObject; public Material[] sharedMaterials; public bool enabled=true; }
- public static class Resources {
-  public static Renderer[] Snapshot;
-  public static T[] FindObjectsOfTypeAll<T>() { return (T[])(object)Snapshot; }
- }
-}
 namespace QVVR {
  public static class LiquidTests {
   static int checks;
@@ -42,7 +31,9 @@ namespace QVVR {
  }
 }
 '@
-Add-Type -TypeDefinition ("using System.Collections.Generic; using UnityEngine;`n" + $fixture +
+$visibility=(Get-Content (Join-Path $root 'src/QVVR/DioramaVisibility.cs') -Raw).Replace('using System.Collections.Generic;','').Replace('using UnityEngine;','')
+$api=Get-Content (Join-Path $PSScriptRoot 'performance-fixture.cs') -Raw
+Add-Type -TypeDefinition ("using System.Collections.Generic; using UnityEngine;`n" + $api + $visibility + $fixture +
     $policy.Replace('using System.Collections.Generic;', '').Replace('using UnityEngine;', ''))
 $count = [QVVR.LiquidTests]::Run()
 

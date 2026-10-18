@@ -1,11 +1,22 @@
 QVVR 0.1.0 - Experimental VR mod
 ================================
 
-Costume/map selections in 001_Intro can render in full stereo without diorama
+Hub/costume/map screens in 001_Intro can render in full stereo without diorama
 clipping or passthrough. Title/loading/other states remain 2D. Use 3D costume/map
 menus in settings to test it or recover flat capture if framing/transitions fail.
+Their UI shares gameplay HUD size, distance, upright follow and capture rate.
+Exception: only the stereo costume-access hub uses HUD scale 4. Distances and
+the saved normal HUD scale for maps/costume selection/gameplay stay unchanged.
 The stereo selection option is off by default until Frame measurement/testing.
-First-entry default depth is 1.6 m; closer clearance uses actual cylinder bounds.
+Costume-access hub VR distance retains 35% of original forward depth; set
+VR.IntroHubDistanceScale=1 to restore it. Costume/map cameras stay unchanged.
+The map LobbyDim is hidden only during stereo eye/UI capture; other fades remain.
+Entry base: 1.2 m forward, 0.45 m below eyes. EntryDistanceMultiplier=0.8 and
+EntrySizeMultiplier=0.85 make existing/fresh layouts closer and 15% smaller,
+subject to size-aware clearance. Base 1.6 m size becomes 1.36 m physically.
+Saving inverts entry gains, preventing cumulative shrink/forward drift. Set
+both multipliers to 1 to restore previous framing; height/rotation are retained.
+Only untouched unsaved old defaults migrate. Saved/custom layouts stay intact.
 Saved X/Y, size, rotation and intentionally distant placement are preserved.
 
 Two-hand placement sensitivity: translation 1.15x, rotation 1.10x. Resize and
@@ -24,7 +35,9 @@ Steam launch options for the Windows build on Steam Frame:
 
 Controls:
   F7: recenter. F8: toggle VR/desktop.
-  Right A/right trigger: confirm. Right B: back.
+  Right A: confirm/jump. Right B: back.
+  Gameplay index triggers: left LB, right RB, both LB+RB. Grips are unchanged.
+  Menus/cinema/VR settings retain right-trigger confirm.
   Both stick clicks: open/close QVVR settings.
   Menu up/down: select. Left/right: adjust. Closing saves settings.
   Both grips: natural translation, hand-separation size, hand/wrist rotation.
@@ -42,7 +55,23 @@ Diorama:
   Character movement/jump inputs follow viewer heading and diorama rotation.
   2D panels remain upright. The open settings panel stays physically anchored.
   Cylinder edge fade defaults to 1 game unit; zero restores hard clipping.
-  Gameplay HUD size defaults to 2x, distance to 2.8 m.
+  Gameplay/stereo intro HUD size defaults to 2x, distance to 2.8 m.
+  HUD center inset: 12% per edge, adjustable 0-45% without scaling text.
+  Zero restores original anchors; title/flat recovery remains unchanged.
+  First-level opening Timeline: flat panel, then automatic stereo restoration
+  after completion/skip. Grips are disabled during intro; game controls remain.
+  The movie screen stays fixed in physical space; recenter places it in front.
+  New Game Opening/Opening2 use the same fixed screen, not their animated camera.
+  Hub pause/options/achievements UI alone uses scale 2 and its own live distance:
+  Hub pause/achievements distance, default 1.2 m, adjustable 0.6-3 m.
+  Map selection: Cloud.Panel's original fade tween drives a full-eye VR fade,
+  including HUD and passthrough, through Loading and gameplay fade-in. The 2D
+  rectangle is hidden only for capture, with original game state restored.
+  HUD/settings draw above scenery using a final depth-only-clear panel pass.
+  Manual rendering waits for hair/character LateUpdate; physics stays enabled.
+  Only Q's animation/skinning culling is bypassed during VR gameplay. Original
+  settings restore on tracking loss/scene change/shutdown; bone physics and
+  camera-distance rules stay untouched. Headset hair/performance test required.
   Decorative clouds are hidden only during VR gameplay renders. Rain-cloud
   puzzles, cloud-save UI, other effects and desktop rendering remain intact.
 
@@ -50,15 +79,29 @@ Passthrough and fallback:
   Diorama.Passthrough=false: OpenVR, black or green opaque exterior.
   Diorama.Passthrough=true: exclusive OpenXR ALPHA_BLEND, after manual restart.
   XR tracking/actions and composition replace OpenVR entirely in this mode.
+  Fairy texture alpha is enabled only for manual passthrough renders; original
+  material blending is restored afterward. Additive black texels no longer add
+  opaque quad coverage. Existing GPU copy handles visible emission; no new pass.
   Failing/unsupported XR is destroyed before OpenVR fallback.
   Without a usable VR runtime, original desktop rendering remains available.
 
 Quality:
   Profiles Performance / Balanced / Sharp use 0.85 / 1.0 / 1.15 resolution.
   Profiles take effect on the next manual launch; MSAA defaults to 2x.
-  HUD capture: 36 Hz. Menus: 72 Hz. UI: 2880x1620 with GPU mipmaps.
+  Gameplay/stereo intro HUD: 36 Hz. Flat menus: 72 Hz.
+  UI: 3360x1890 (1.75x) with GPU mipmaps; scene resolution is unchanged.
+  UI-only sharpness test: +36.1% capture pixels, not total GPU time.
+  Old default 1.5 migrates once; custom values are preserved.
+  Rollback: VR.UiTextureScale=1.5, keep UiQualityRevision=1, manually restart.
   Realtime shadows are disabled in VR and restored in desktop fallback.
   Target: 72 Hz (13.89 ms), requiring actual device CPU/GPU measurements.
+  XR eye scale cap: default 1.0, adjustable/off (0) in settings; manual restart.
+  Caps Sharp supersampling to reduce missed-frame judder, preserving the chosen
+  profile, OpenVR and HUD capture size (final eye sampling follows the cap).
+  Exact absolute runtime eye poses avoid redundant head/calibration round-trips;
+  no head smoothing or artificial world lag. Headset jitter fix needs validation.
+  Auto entry clearance: cylinder bounding sphere + 8 cm, minimum 0.35 m, no 1 m
+  floor for tiny dioramas. Manual distance supports 0.25-10 m.
   Experimental features may still have rendering, input or performance issues.
 
 Diagnostics:

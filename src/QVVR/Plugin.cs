@@ -17,6 +17,7 @@ namespace QVVR
 
         internal ConfigEntry<bool> VrEnabled;
         internal ConfigEntry<bool> StereoSelectionMenus;
+        internal ConfigEntry<float> IntroHubDistanceScale;
         internal ConfigEntry<float> EyeTextureResolutionScale;
         internal ConfigEntry<bool> FlipEyeTextureY;
         internal ConfigEntry<bool> VrControllerInput;
@@ -28,6 +29,7 @@ namespace QVVR
         internal ConfigEntry<bool> PlacementSaved;
         internal ConfigEntry<Vector3> PlacementOffset, PlacementEuler;
         internal ConfigEntry<float> PreferredSizeMeters;
+        internal ConfigEntry<float> EntrySizeMultiplier, EntryDistanceMultiplier;
         internal ConfigEntry<float> WorldGrabTranslationGain;
         internal ConfigEntry<float> DioramaMoveSensitivity, DioramaRotationSensitivity;
         internal ConfigEntry<float> PanelWidth;
@@ -35,6 +37,8 @@ namespace QVVR
         internal ConfigEntry<float> PanelFollowLag;
         internal ConfigEntry<float> GameplayHudScale;
         internal ConfigEntry<float> GameplayHudDistance;
+        internal ConfigEntry<float> HubPauseDistance, XrResolutionCap;
+        internal ConfigEntry<float> GameplayHudInset;
         internal ConfigEntry<float> CameraDistanceScale;
         internal ConfigEntry<float> WorldUnitsPerMeter;
         internal ConfigEntry<float> ViewPitchDegrees;
@@ -54,6 +58,7 @@ namespace QVVR
         internal ConfigEntry<bool> DisableVSync;
         internal ConfigEntry<bool> CompositorFramePacing;
         internal ConfigEntry<bool> DisableRealtimeShadows;
+        internal ConfigEntry<bool> CullOutsideDiorama, AdaptiveUiCapture, DirectHudOverlay, DetailedGpuTimings;
         internal ConfigEntry<int> UiCaptureRate;
         internal ConfigEntry<int> MenuCaptureRate;
         internal ConfigEntry<float> UiTextureScale;
@@ -61,6 +66,7 @@ namespace QVVR
         internal ConfigEntry<int> QualityPreset;
         private ConfigEntry<int> qualityRevision;
         private ConfigEntry<int> featherRevision;
+        private ConfigEntry<int> uiQualityRevision;
         internal ConfigEntry<KeyboardShortcut> RecenterKey;
         internal ConfigEntry<KeyboardShortcut> ToggleVrKey;
 
@@ -83,6 +89,18 @@ namespace QVVR
             {
                 DioramaFeatherWidth.Value = DioramaMath.UpgradeFeatherWidth(DioramaFeatherWidth.Value);
                 featherRevision.Value = 1;
+                Config.Save();
+            }
+            if (uiQualityRevision.Value < 1)
+            {
+                UiTextureScale.Value = RenderBudget.UpgradeUiScale(UiTextureScale.Value);
+                uiQualityRevision.Value = 1;
+                Config.Save();
+            }
+            // Update only untouched first-entry defaults, never saved/custom poses.
+            if (!PlacementSaved.Value && SpatialMath.LegacyDefaultOffset(PlacementOffset.Value))
+            {
+                PlacementOffset.Value = SpatialMath.DefaultOffset;
                 Config.Save();
             }
             // Settings changed interactively are saved once on menu close.
@@ -122,9 +140,15 @@ namespace QVVR
             VrEnabled = Config.Bind("VR", "Enabled", true,
                 "Initialize OpenVR and submit stereoscopic frames.");
             StereoSelectionMenus = Config.Bind("VR", "StereoSelectionMenus", false,
-                "Experimental full stereo costume/map selections without gameplay placement/cylinder/passthrough. Off until Frame framing/performance testing. Title/loading/unknown states remain 2D. False restores captured 2D menus. Live setting.");
+                "Experimental full stereo intro hub/costume/map screens with gameplay HUD settings, without gameplay placement/cylinder/passthrough. Off by default pending Frame framing/performance testing. Title/loading/unknown states remain 2D. False restores captured 2D menus. Live setting.");
+            IntroHubDistanceScale = Config.Bind("VR", "IntroHubDistanceScale", 0.35f,
+                "Stereo costume-access hub camera distance: 0.35 retains 35% of original forward depth to its world anchor; range 0.15-1, with a 1-unit near guard. 1 restores original framing. Does not affect costume/map cameras, head tracking or desktop. Live setting.");
             EyeTextureResolutionScale = Config.Bind("VR", "EyeTextureResolutionScale", 1f,
                 "Scale applied to runtime-recommended per-eye size; applies on next launch.");
+            XrResolutionCap = Config.Bind("VR", "XrResolutionCap", 1f,
+                "Exclusive OpenXR 3D eye-scale ceiling to reduce missed 72 Hz frames; default 1.0, 0 disables, positive range 0.5-1.5. Does not change requested profile, OpenVR or HUD capture resolution. Requires manual relaunch.");
+            HubPauseDistance = Config.Bind("Comfort", "HubPauseDistanceMeters", 1.2f,
+                "Only the costume-access hub pause/options/achievements overlay distance, 0.6-3 m. Independent of game HUD, map/costume screens and the VR settings panel. Live settings-menu control.");
             EyeMsaaSamples = Config.Bind("VR", "EyeMsaaSamples", 2,
                 "Eye geometry MSAA: 1 (off), 2 or 4; resolved on GPU before OpenVR submission. Requires relaunch.");
             QualityPreset = Config.Bind("VR", "QualityPreset", 1,
@@ -155,9 +179,11 @@ namespace QVVR
             PanelFollowLag = Config.Bind("Comfort", "PanelFollowLagSeconds", 0.35f,
                 "Exponential follow time constant for panels only, not the HMD; range 0 to 1.5 seconds.");
             GameplayHudScale = Config.Bind("Comfort", "GameplayHudScale", 2f,
-                "Gameplay HUD panel size multiplier, 0.5 to 3. Independent of 2D title/menu UI. Live setting.");
+                "Gameplay and stereo intro HUD panel size multiplier, 0.5 to 3. Independent of captured 2D title/menu UI. Live setting.");
             GameplayHudDistance = Config.Bind("Comfort", "GameplayHudDistanceMeters", 2.8f,
-                "Gameplay HUD distance, 1 to 5 physical meters. Does not change the title/menu panel distance. Live setting.");
+                "Gameplay and stereo intro HUD distance, 1 to 5 physical meters. Does not change captured 2D title/menu panel distance. Live setting.");
+            GameplayHudInset = Config.Bind("Comfort", "GameplayHudInsetPercent", 12f,
+                "Move captured gameplay/stereo intro UI toward center by insetting root layout anchors, 0-45 percent per edge. Below 50 prevents collapsed/inverted stretch panels. Keeps local font/widget size and game references; 0 restores anchors. Title/cinematic/flat recovery unchanged. Live setting.");
             CameraDistanceScale = Config.Bind("Comfort", "CameraDistanceScale", 0.4f,
                 "Scale of the original camera-to-character offset in playable scenes; 1 is original, range 0.15 to 1.5.");
             WorldUnitsPerMeter = Config.Bind("Comfort", "WorldUnitsPerMeter", 1f,
@@ -169,10 +195,14 @@ namespace QVVR
             DioramaWorldScale = Config.Bind("Diorama", "WorldScale", 1f,
                 "Physical diorama size multiplier, 0.001 to 10. Both grips adjust size alongside translation/rotation; live menu size changes preserve center. Entry fits saved preferred physical size. Full stereo head translation is preserved.");
             PlacementSaved = Config.Bind("Diorama", "PlacementSaved", false, "A reusable physical layout has been saved after a placement or first automatic fit.");
-            PlacementOffset = Config.Bind("Diorama", "PlacementOffsetMeters", new Vector3(0f, -0.35f, 1.6f),
-                "Saved cylinder center relative to the user's upright heading at gesture release; next level reuses it with front/visibility safeguards.");
+            PlacementOffset = Config.Bind("Diorama", "PlacementOffsetMeters", SpatialMath.DefaultOffset,
+                "Saved cylinder center relative to upright heading; first-entry default is 1.2 m forward, 0.45 m below eyes. Next level reuses saved pose with visibility/size-clearance safeguards.");
             PlacementEuler = Config.Bind("Diorama", "PlacementEulerDegrees", Vector3.zero, "Saved diorama orientation relative to the user's upright heading.");
-            PreferredSizeMeters = Config.Bind("Diorama", "PreferredSizeMeters", 1.6f, "Saved physical largest cylinder dimension; first entry defaults to 1.6 m. Entry fit clamps 0.05-4 m; in-level gestures keep full size range.");
+            PreferredSizeMeters = Config.Bind("Diorama", "PreferredSizeMeters", 1.6f, "Saved base largest cylinder dimension, before EntrySizeMultiplier. Default base 1.6 m gives 1.36 m with gain 0.85. Saves invert entry gains; fitted actual size clamps 0.05-4 m while in-level gestures keep the full range.");
+            EntrySizeMultiplier = Config.Bind("Diorama", "EntrySizeMultiplier", 0.85f,
+                "Level-entry size relative to the saved base preference, default 0.85 (15% smaller). Range 0.25-1.5; 1 restores prior framing. Saves invert this gain so entries never repeatedly shrink.");
+            EntryDistanceMultiplier = Config.Bind("Diorama", "EntryDistanceMultiplier", 0.8f,
+                "Level-entry forward distance relative to saved base offset, default 0.8 (20% closer), subject to cylinder clearance. Range 0.25-1.5; 1 restores prior distance. Height/rotation stay unchanged; saves invert this gain.");
             DioramaRadius = Config.Bind("Diorama", "Radius", 12f,
                 "Cylinder radius in original game units, 0.5 to 200. Live setting.");
             DioramaHeight = Config.Bind("Diorama", "Height", 12f,
@@ -207,12 +237,22 @@ namespace QVVR
                 "Use graphics-thread WaitGetPoses before rendering instead of also sleeping at Unity targetFrameRate.");
             DisableRealtimeShadows = Config.Bind("Performance", "DisableRealtimeShadowsInVr", true,
                 "Disable repeated realtime shadow-map rendering in VR; original shadow setting is restored on fallback.");
+            CullOutsideDiorama = Config.Bind("Performance", "CullOutsideDiorama", true,
+                "Conservatively omit cached scene meshes outside the cylinder during stereo draws only. Also prune invisible liquid depth and immutable static-batch cap bounds. Live A/B switch; original states restored after both eyes.");
+            AdaptiveUiCapture = Config.Bind("Performance", "AdaptiveUiCapture", true,
+                "Reuse unchanged full-resolution HUD captures. Dirty graphics, transforms, CanvasGroups, animation and custom materials retain updates at the configured capture rate. Live A/B switch.");
+            DirectHudOverlay = Config.Bind("Performance", "DirectHudOverlay", true,
+                "Draw the ordinary captured HUD quad at the end of each world camera instead of rendering another camera. Settings canvas and flat scenes keep the validated camera path. Live A/B switch.");
+            DetailedGpuTimings = Config.Bind("Performance", "DetailedGpuTimings", false,
+                "Enable nonblocking GPU timestamps for UI, world eyes, depth, HUD and XR copy; log every 5 seconds. Diagnostic overhead; requires restart. No eye texture readback.");
             UiCaptureRate = Config.Bind("Performance", "UiCaptureRate", 36,
-                "Maximum GPU capture refresh for gameplay HUD; HMD/eye tracking remains compositor-paced.");
+                "Maximum GPU capture refresh for gameplay and stereo intro HUD; HMD/eye tracking remains compositor-paced.");
             MenuCaptureRate = Config.Bind("Performance", "MenuCaptureRate", 72,
-                "Maximum GPU capture refresh for 2D scenes and their UI; separate from gameplay HUD capture.");
-            UiTextureScale = Config.Bind("VR", "UiTextureScale", 1.5f,
-                "UI supersampling relative to 1920x1080, range 1 to 2; GPU mipmaps reduce text shimmer. Requires relaunch.");
+                "Maximum GPU capture refresh for captured 2D scenes and their UI; separate from gameplay/stereo intro HUD capture.");
+            UiTextureScale = Config.Bind("VR", "UiTextureScale", RenderBudget.DefaultUiScale,
+                "UI-only supersampling relative to 1920x1080, default 1.75 (3360x1890), range 1-2. GPU mipmaps/trilinear filtering retained; world/eye resolution and capture cadence unchanged. Set 1.5 for rollback after migration. Requires manual relaunch.");
+            uiQualityRevision = Config.Bind("VR", "UiQualityRevision", 0,
+                "One-time migration of old default UI scale 1.5 to 1.75; custom values and subsequent manual rollback are preserved.");
             RecenterKey = Config.Bind("Controls", "RecenterVR", new KeyboardShortcut(KeyCode.F7),
                 "Recenter the current HMD pose.");
             ToggleVrKey = Config.Bind("Controls", "ToggleVR", new KeyboardShortcut(KeyCode.F8),

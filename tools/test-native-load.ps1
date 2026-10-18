@@ -54,6 +54,9 @@ try {
     if ([QVVRNativeLoadTest]::GetProcAddress($modules[2], 'QVVR_SetRenderPoseAndMode') -eq [IntPtr]::Zero) {
         throw 'Missing frame-latched opaque selection mode export.'
     }
+    foreach ($export in @('QVVR_RegisterCapMeshBounds','QVVR_SetCapCullVolume','QVVR_SetDetailedGpuTiming','QVVR_GetGpuPhaseTime','QVVR_GetCapCullStats')) {
+        if ([QVVRNativeLoadTest]::GetProcAddress($modules[2], $export) -eq [IntPtr]::Zero) { throw "Missing performance export: $export" }
+    }
     $bootstrapSource = Get-Content -LiteralPath (Join-Path $root 'src\QVVR\OpenVrManager.cs') -Raw
     if ($bootstrapSource -match 'extern\s+int\s+QVVR_InstallShaderClip') {
         throw 'Early shader-hook bootstrap must not eagerly bind a Mono P/Invoke before loading the DLL.'

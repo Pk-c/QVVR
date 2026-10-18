@@ -367,6 +367,26 @@ bool PatchCylinderShader(const void *bytes, size_t length, std::vector<std::uint
             }
             else
             {
+                if (!premultiplied)
+                {
+                    // Some transparent game quads still write depth. With
+                    // SrcAlpha RGB blending, zero/negative alpha contributes
+                    // nothing and must not occlude later geometry/effects.
+                    // Never apply this to ONE-based emissive/premultiplied draws.
+                    // Unlike output writes, discard is irreversible. At RETC
+                    // it must run only when that conditional return is taken.
+                    if (op == D3D10_SB_OPCODE_RETC)
+                    {
+                        Words guard(code->data.begin() + at, code->data.begin() + at + len);
+                        guard[0] = (guard[0] & ~0x7ffu) | D3D10_SB_OPCODE_IF;
+                        combined.insert(combined.end(), guard.begin(), guard.end());
+                    }
+                    Emit(combined, D3D10_SB_OPCODE_GE, {{0x00100082, scratchTemp}, {0x00004001, 0}, alpha});
+                    Emit(combined, D3D10_SB_OPCODE_DISCARD |
+                        ENCODE_D3D10_SB_INSTRUCTION_TEST_BOOLEAN(D3D10_SB_INSTRUCTION_TEST_NONZERO),
+                        {{0x00100ff6, scratchTemp}});
+                    if (op == D3D10_SB_OPCODE_RETC) Emit(combined, D3D10_SB_OPCODE_ENDIF, {});
+                }
                 // Straight-alpha blend multiplies RGB itself; ONE/premultiplied
                 // blend needs shader RGB attenuation. Never apply fade twice.
                 if (premultiplied) Emit(combined, D3D10_SB_OPCODE_MUL, {{0x00102072, 0}, color, fadeSource});
@@ -772,8 +792,13 @@ HRESULT STDMETHODCALLTYPE HookCreateBlend(ID3D11Device *device, const D3D11_BLEN
             rt.RenderTargetWriteMask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
         if (rt.BlendEnable)
         {
-            rt.SrcBlendAlpha = D3D11_BLEND_ONE;
-            rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+            // Additive textures often have BLACK RGB but alpha=1 outside the
+            // visible effect. Unioning their alpha makes a black passthrough quad.
+            // Preserve destination coverage; do NOT alter the original RGB blend.
+            bool additive = rt.BlendOp == D3D11_BLEND_OP_ADD && rt.DestBlend == D3D11_BLEND_ONE &&
+                (rt.SrcBlend == D3D11_BLEND_ONE || rt.SrcBlend == D3D11_BLEND_SRC_ALPHA);
+            rt.SrcBlendAlpha = additive ? D3D11_BLEND_ZERO : D3D11_BLEND_ONE;
+            rt.DestBlendAlpha = additive ? D3D11_BLEND_ONE : D3D11_BLEND_INV_SRC_ALPHA;
             rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
         }
         ID3D11BlendState *variant = nullptr;
@@ -1024,6 +1049,7 @@ void SetShaderClipTargets(ID3D11Texture2D *left, ID3D11Texture2D *right)
     clipTargets[1] = right;
 }
 void RegisterCapMesh(ID3D11Buffer *indices) { cylinderCaps.RegisterMesh(indices); }
+void RegisterCapMeshBounds(ID3D11Buffer *indices, const CapBounds &bounds) { cylinderCaps.RegisterMesh(indices, &bounds); }
 void ClearCapMeshes() { cylinderCaps.ClearMeshes(); }
 void CompositeShaderCaps()
 {
@@ -1032,11 +1058,12 @@ void CompositeShaderCaps()
 }
 void GetCapStats(unsigned &available, unsigned &registered, unsigned &replayed, unsigned &composed)
 { cylinderCaps.Stats(available, registered, replayed, composed); }
-void BeginShaderClip(const ClipParameters &parameters, bool caps, bool reversedZ, bool transparent)
+void GetCapCullStats(unsigned &bounded, unsigned &skipped) { cylinderCaps.CullStats(bounded, skipped); }
+void BeginShaderClip(const ClipParameters &parameters, bool caps, bool reversedZ, bool transparent, const CapCullVolume *cull)
 {
     if (!context || clipping)
         return;
-    cylinderCaps.Begin(parameters, caps, reversedZ, transparent);
+    cylinderCaps.Begin(parameters, caps, reversedZ, transparent, cull);
     CollectWorldConstants();
     diagnosticArmed = diagnosticQuery && !diagnosticCaptured && parameters.limits[0] > 4.f && parameters.limits[0] < 1e20f;
     if (diagnosticArmed) diagnostic.parameters = parameters;

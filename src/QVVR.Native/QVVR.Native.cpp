@@ -50,9 +50,11 @@ constexpr int ClipEventBase = 0x51566000;
 constexpr int EndClipEvent = 0x51566200;
 constexpr int CapCompositeEvent = 0x51566201;
 constexpr int ShutdownEvent = 0x51566300;
+constexpr int ProfileEventBase = 0x51566400;
 struct ClipSlot
 {
     qvvr::ClipParameters eye[2];
+    qvvr::CapCullVolume cull[2];
     bool caps[2] = {}, reversed[2] = {}, transparent[2] = {};
 } clipSlots[qvvr::PoseSlotCount] = {};
 std::mutex clipMutex;
@@ -62,6 +64,8 @@ qvvr::GpuTiming gpuTiming;
 
 void __stdcall OnRenderEvent(int eventId)
 {
+    if (eventId >= ProfileEventBase && eventId < ProfileEventBase + 16)
+    { gpuTiming.Mark(static_cast<unsigned>(eventId - ProfileEventBase)); return; }
     if (eventId == ShutdownEvent)
     {
         qvvr::EndShaderClip();
@@ -89,13 +93,15 @@ void __stdcall OnRenderEvent(int eventId)
             return;
         qvvr::ClipParameters parameters;
         bool caps, reversed, transparent;
+        qvvr::CapCullVolume cull;
         {
             std::lock_guard<std::mutex> lock(clipMutex);
             parameters = clipSlots[slot].eye[eye];
             caps = clipSlots[slot].caps[eye]; reversed = clipSlots[slot].reversed[eye];
+            cull = clipSlots[slot].cull[eye];
             transparent = clipSlots[slot].transparent[eye];
         }
-        qvvr::BeginShaderClip(parameters, caps, reversed, transparent);
+        qvvr::BeginShaderClip(parameters, caps, reversed, transparent, &cull);
         return;
     }
     // Slot identity travels with the queued Unity command, not a shared
@@ -156,9 +162,11 @@ void __stdcall OnRenderEvent(int eventId)
     frameReady = false;
     if (usingXrFrame)
     {
+        gpuTiming.Mark(10);
         bool result =
             qvvr::SubmitOpenXrFrame(static_cast<ID3D11Texture2D *>(left), static_cast<ID3D11Texture2D *>(right),
                                     activeRenderPose, flipEyeTextureY.load(), activeOpaqueScene);
+        gpuTiming.Mark(11);
         gpuTiming.End();
         leftSubmitResult.store(result ? 0 : qvvr::OpenXrError());
         rightSubmitResult.store(result ? 0 : qvvr::OpenXrError());
@@ -235,6 +243,8 @@ extern "C"
     {
         return gpuTiming.Latest();
     }
+    __declspec(dllexport) void __cdecl QVVR_SetDetailedGpuTiming(int enabled) { gpuTiming.ConfigureDetailed(enabled != 0); }
+    __declspec(dllexport) double __cdecl QVVR_GetGpuPhaseTime(int phase) { return gpuTiming.Phase(static_cast<unsigned>(phase)); }
     __declspec(dllexport) int __cdecl QVVR_InstallShaderClip(void *texture)
     {
         if (!texture)
@@ -257,6 +267,7 @@ extern "C"
         std::lock_guard<std::mutex> lock(clipMutex);
         clipSlots[slot].eye[eye] = *parameters;
         clipSlots[slot].caps[eye] = false;
+        clipSlots[slot].cull[eye] = {};
     }
     __declspec(dllexport) void __cdecl QVVR_SetCylinderCapOptions(int slot, int eye, int enabled, int reversedZ, int transparent)
     {
@@ -270,9 +281,25 @@ extern "C"
     {
         qvvr::RegisterCapMesh(static_cast<ID3D11Buffer *>(indices));
     }
+    __declspec(dllexport) void __cdecl QVVR_RegisterCapMeshBounds(void *indices, const qvvr::CapBounds *bounds)
+    {
+        if (bounds) qvvr::RegisterCapMeshBounds(static_cast<ID3D11Buffer *>(indices), *bounds);
+    }
+    __declspec(dllexport) void __cdecl QVVR_SetCapCullVolume(int slot, int eye, float x, float y, float z, float radius, float halfHeight)
+    {
+        if (slot < 0 || slot >= qvvr::PoseSlotCount || eye < 0 || eye > 1) return;
+        std::lock_guard<std::mutex> lock(clipMutex);
+        auto &v = clipSlots[slot].cull[eye];
+        v.center[0] = x; v.center[1] = y; v.center[2] = z; v.radius = radius; v.halfHeight = halfHeight;
+    }
     __declspec(dllexport) void __cdecl QVVR_ClearCapMeshes()
     {
         qvvr::ClearCapMeshes();
+    }
+    __declspec(dllexport) void __cdecl QVVR_GetCapCullStats(unsigned *bounded, unsigned *skipped)
+    {
+        unsigned b = 0, s = 0; qvvr::GetCapCullStats(b, s);
+        if (bounded) *bounded = b; if (skipped) *skipped = s;
     }
     __declspec(dllexport) void __cdecl QVVR_GetCapStats(unsigned *available, unsigned *registered, unsigned *replayed, unsigned *composed)
     {

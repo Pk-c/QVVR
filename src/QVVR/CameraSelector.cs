@@ -6,17 +6,21 @@ namespace QVVR
 {
     internal static class CameraSelector
     {
+        private static Camera[] cameraCache = new Camera[16];
         internal static Camera FindBestCamera()
         {
             Camera main = Camera.main;
             if (IsUsable(main))
                 return main;
 
-            Camera[] cameras = Camera.allCameras;
+            int needed = Camera.allCamerasCount;
+            if (cameraCache.Length < needed) cameraCache = new Camera[needed + 8];
+            int count = Camera.GetAllCameras(cameraCache);
+            Camera[] cameras = cameraCache;
             Camera best = null;
             float bestScore = float.MinValue;
 
-            for (int index = 0; index < cameras.Length; index++)
+            for (int index = 0; index < count; index++)
             {
                 Camera camera = cameras[index];
                 if (!IsUsable(camera))

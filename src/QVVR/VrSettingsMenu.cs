@@ -40,7 +40,7 @@ namespace QVVR
                 root.layer = layer;
                 root.transform.SetParent(parent, false);
                 RectTransform rect = (RectTransform)root.transform;
-                rect.sizeDelta = new Vector2(960f, 1360f);
+                rect.sizeDelta = new Vector2(960f, 1404f);
                 Canvas canvas = root.GetComponent<Canvas>();
                 canvas.renderMode = RenderMode.WorldSpace;
                 canvas.sortingOrder = 4000;
@@ -56,10 +56,10 @@ namespace QVVR
                 image.color = new Color(0.035f, 0.05f, 0.09f, 0.96f);
                 image.raycastTarget = false;
                 CreateText("Title", font, layer, 610f, 50).text = "QVVR - SETTINGS";
-                rows = new Text[24];
+                rows = new Text[27];
                 for (int index = 0; index < rows.Length; index++)
-                    rows[index] = CreateText("Row" + index, font, layer, 530f - index * 44f, 32);
-                Text footer = CreateText("Help", font, layer, -610f, 25);
+                    rows[index] = CreateText("Row" + index, font, layer, 530f - index * 40f, 32);
+                Text footer = CreateText("Help", font, layer, -632f, 25);
                 footer.text = "Up/down: select   Left/right: adjust\nA: action   B or both sticks: close and save\nBoth grips: move / resize / rotate\nRender profile: next launch; game not paused";
                 RefreshText();
                 root.SetActive(false);
@@ -187,6 +187,9 @@ namespace QVVR
                 case 21: plugin.DioramaWorldScale.Value = DioramaScaleState.Clamp(plugin.DioramaWorldScale.Value * (sign > 0f ? 1.25f : 0.8f)); break;
                 case 22: plugin.BlackCutSurfaces.Value = !plugin.BlackCutSurfaces.Value; break;
                 case 23: plugin.StereoSelectionMenus.Value = !plugin.StereoSelectionMenus.Value; break;
+                case 24: plugin.GameplayHudInset.Value = HudLayoutMath.Percent(plugin.GameplayHudInset.Value + sign * 2f); break;
+                case 25: plugin.HubPauseDistance.Value = MenuScenePolicy.PauseDistance(plugin.HubPauseDistance.Value + sign * 0.1f); break;
+                case 26: plugin.XrResolutionCap.Value = RenderBudget.NextXrCap(plugin.XrResolutionCap.Value, sign); break;
             }
         }
 
@@ -201,6 +204,9 @@ namespace QVVR
             plugin.PanelFollowLag.Value = 0.35f;
             plugin.GameplayHudScale.Value = 2f;
             plugin.GameplayHudDistance.Value = 2.8f;
+            plugin.HubPauseDistance.Value = 1.2f;
+            plugin.XrResolutionCap.Value = 1f;
+            plugin.GameplayHudInset.Value = 12f;
             plugin.RightGripTranslationGain.Value = 20f;
             plugin.DioramaWorldScale.Value = 1f;
             plugin.DioramaMoveSensitivity.Value = 1.15f;
@@ -237,6 +243,9 @@ namespace QVVR
             rows[21].text = "Diorama size: " + plugin.DioramaWorldScale.Value.ToString("0.000", CultureInfo.InvariantCulture) + " x";
             rows[22].text = "Black cut surfaces (experimental): " + (plugin.BlackCutSurfaces.Value ? "On" : "Off");
             rows[23].text = "3D costume/map menus: " + (plugin.StereoSelectionMenus.Value ? "On" : "Off");
+            rows[24].text = "HUD center inset: " + Format(plugin.GameplayHudInset.Value) + " %";
+            rows[25].text = "Hub pause/achievements distance: " + Format(MenuScenePolicy.PauseDistance(plugin.HubPauseDistance.Value)) + " m";
+            rows[26].text = "XR eye scale cap: " + (plugin.XrResolutionCap.Value <= 0f ? "Off" : Format(plugin.XrResolutionCap.Value)) + " (restart)";
             for (int index = 0; index < rows.Length; index++)
                 rows[index].color = index == selected ? new Color(0.4f, 0.9f, 1f) : Color.white;
         }

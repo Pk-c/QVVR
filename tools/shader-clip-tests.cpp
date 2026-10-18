@@ -399,6 +399,36 @@ static void RenderTest(ID3D11Device *device, ID3D11DeviceContext *context)
     printf("GPU clipping: %u pixels passed; outside foreground does not hide inside geometry, alpha 0/1, "
            "radial/height/transform checks.\n",
            checked);
+    // A depth-writing SrcAlpha quad with alpha=0 must not hide a later solid.
+    D3D11_BLEND_DESC transparentBlend = {};
+    auto &rt = transparentBlend.RenderTarget[0];
+    rt.BlendEnable = TRUE; rt.SrcBlend = D3D11_BLEND_SRC_ALPHA; rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp = rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    ID3D11BlendState *transparentState = nullptr;
+    assert(SUCCEEDED(device->CreateBlendState(&transparentBlend, &transparentState)));
+    const float transparentEmpty[4] = {};
+    context->ClearRenderTargetView(target, transparentEmpty); context->ClearDepthStencilView(depthTarget, D3D11_CLEAR_DEPTH, 1, 0);
+    context->OMSetRenderTargets(1, &target, depthTarget);
+    context->OMSetDepthStencilState(nullptr, 0);
+    qvvr::ClipParameters interior = {}; interior.screenToCylinder[15] = 1; interior.limits[0] = interior.limits[1] = 1;
+    qvvr::BeginShaderClip(interior);
+    context->OMSetBlendState(transparentState, nullptr, 0xffffffff);
+    context->VSSetShader(front, nullptr, 0); context->PSSetShader(red, nullptr, 0); DrawTriangle(context);
+    context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+    context->VSSetShader(vs, nullptr, 0); context->PSSetShader(green, nullptr, 0); DrawTriangle(context);
+    qvvr::EndShaderClip();
+    context->CopyResource(readback, color);
+    D3D11_MAPPED_SUBRESOURCE transparentRead = {};
+    assert(SUCCEEDED(context->Map(readback, 0, D3D11_MAP_READ, 0, &transparentRead)));
+    for (int y = 0; y < 32; ++y) for (int x = 0; x < 32; ++x)
+    {
+        auto pixel = static_cast<unsigned char *>(transparentRead.pData) + y * transparentRead.RowPitch + x * 4;
+        assert(pixel[0] == 0 && pixel[1] == 255 && pixel[2] == 0 && pixel[3] == 255);
+    }
+    context->Unmap(readback, 0); transparentState->Release();
+    puts("GPU clipping: 1024 zero-alpha depth-writing quad pixels preserve geometry behind them.");
     red->Release();
     green->Release();
     front->Release();
@@ -434,21 +464,22 @@ static void FeatherTest(ID3D11Device *device, ID3D11DeviceContext *context)
     context->IASetInputLayout(nullptr); context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     qvvr::SetShaderClipTargets(color, color);
     unsigned checks = 0;
-    for (int mode = 0; mode < 5; ++mode)
+    for (int mode = 0; mode < 7; ++mode)
     {
         const char *material = mode == 0 ? "float4 main():SV_Target{return float4(1,0,0,0);}" :
             mode == 1 ? "float4 main():SV_Target{return float4(1,0,0,.5);}" :
             mode == 2 ? "float4 main():SV_Target{return float4(.5,0,0,.5);}" :
             mode == 3 ? "float3 main():SV_Target{return float3(1,0,0);}" :
-            "float4 main(float4 p:SV_Position):SV_Target{if(p.x<16)return float4(1,0,0,0);float r=0;[loop]for(int i=0;i<3;i++)r+=.333333333;return float4(r,0,0,0);}";
+            mode == 4 ? "float4 main(float4 p:SV_Position):SV_Target{if(p.x<16)return float4(1,0,0,0);float r=0;[loop]for(int i=0;i<3;i++)r+=.333333333;return float4(r,0,0,0);}" :
+            "float4 main(float4 p:SV_Position):SV_Target{return float4(p.x<16?0:.5,0,0,1);}";
         auto pixelCode = Compile(material, mode == 4 ? "ps_5_0" : "ps_4_0");
         ID3D11PixelShader *ps = nullptr;
         assert(SUCCEEDED(device->CreatePixelShader(pixelCode->GetBufferPointer(), pixelCode->GetBufferSize(), nullptr, &ps)));
         D3D11_BLEND_DESC blend = {};
         auto &rt = blend.RenderTarget[0]; rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-        rt.BlendEnable = mode == 1 || mode == 2;
-        rt.SrcBlend = mode == 1 ? D3D11_BLEND_SRC_ALPHA : D3D11_BLEND_ONE;
-        rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOp = D3D11_BLEND_OP_ADD;
+        rt.BlendEnable = mode == 1 || mode == 2 || mode >= 5;
+        rt.SrcBlend = mode == 1 || mode == 5 ? D3D11_BLEND_SRC_ALPHA : D3D11_BLEND_ONE;
+        rt.DestBlend = mode >= 5 ? D3D11_BLEND_ONE : D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOp = D3D11_BLEND_OP_ADD;
         rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
         ID3D11BlendState *state = nullptr;
         assert(SUCCEEDED(device->CreateBlendState(&blend, &state)));
@@ -500,9 +531,9 @@ static void FeatherTest(ID3D11Device *device, ID3D11DeviceContext *context)
                         bool inside=distance>=0;
                         if (inside) { float t=disabled?1.f:(std::max)(0.f,(std::min)(1.f,distance/.2f)); fade=t*t*(3-2*t); }
                         bool transparent=mode==1 || mode==2;
-                        float red=fade*(transparent?.5f:1.f);
-                        float g=green ? (1-red) : 0.f;
-                        float a=!inside ? static_cast<float>(green) : transparent ? (green?1.f:red) : fade;
+                        float red=fade*(transparent?.5f:mode>=5?(x<16?0.f:.5f):1.f);
+                        float g=green ? (mode>=5?1.f:(1-red)) : 0.f;
+                        float a=mode>=5?static_cast<float>(green):!inside ? static_cast<float>(green) : transparent ? (green?1.f:red) : fade;
                         auto pixel=static_cast<unsigned char*>(mapped.pData)+y*mapped.RowPitch+x*4;
                         assert(abs(static_cast<int>(pixel[0])-static_cast<int>(roundf(red*255)))<=2);
                         assert(abs(static_cast<int>(pixel[1])-static_cast<int>(roundf(g*255)))<=2);
@@ -517,10 +548,16 @@ static void FeatherTest(ID3D11Device *device, ID3D11DeviceContext *context)
     qvvr::SetShaderClipTargets(nullptr,nullptr);
     target->Release(); color->Release(); read->Release(); vs->Release(); vertex->Release();
     printf("GPU feather: %u pixels passed; radial/caps, opaque/straight/premultiplied alpha, partial outputs, branch/loop returns, black/green fallback, zero-width, blend restoration.\n", checks);
-    puts("GPU feather hot hooks: zero C++ allocations across 640 warmed synthetic frames.");
+    puts("GPU feather/additive hot hooks: zero C++ allocations across 896 warmed synthetic frames; black additive texels never add quad coverage.");
 }
 static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
 {
+    qvvr::CapCullVolume testVolume = {{0,0,0},2,2};
+    assert(!qvvr::CapMayIntersect({{-.1f,-.1f,-.1f},{.1f,.1f,.1f}}, testVolume));
+    assert(!qvvr::CapMayIntersect({{4,-1,-1},{5,1,1}}, testVolume));
+    assert(qvvr::CapMayIntersect({{-5,-5,-5},{5,5,5}}, testVolume));
+    assert(qvvr::CapMayIntersect({{1.99f,-1,-.1f},{2.1f,1,.1f}}, testVolume));
+    assert(qvvr::CapMayIntersect({{1,1,1},{-1,-1,-1}}, testVolume));
     unsigned available=0,registered=0,replayed=0,composed=0;
     qvvr::GetCapStats(available,registered,replayed,composed);
     assert(available==1); // Optional pipeline must really compile, not silently skip.
@@ -530,8 +567,8 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
         3,7,6,3,6,2,0,4,7,0,7,3,1,2,6,1,6,5};
     D3D11_BUFFER_DESC ibd = {};
     ibd.ByteWidth = sizeof(indices); ibd.Usage = D3D11_USAGE_IMMUTABLE; ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-    D3D11_SUBRESOURCE_DATA data = {indices,0,0}; ID3D11Buffer *ib = nullptr;
-    assert(SUCCEEDED(device->CreateBuffer(&ibd,&data,&ib)));
+    D3D11_SUBRESOURCE_DATA data = {indices,0,0}; ID3D11Buffer *indexBuffers[3] = {};
+    for (auto &ib : indexBuffers) assert(SUCCEEDED(device->CreateBuffer(&ibd,&data,&ib)));
     auto psCode = Compile("float4 main():SV_Target{return float4(1,0,0,1);}","ps_4_0");
     ID3D11PixelShader *ps = nullptr;
     assert(SUCCEEDED(device->CreatePixelShader(psCode->GetBufferPointer(),psCode->GetBufferSize(),nullptr,&ps)));
@@ -598,7 +635,13 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
             p.screenToCylinder[11]=1;p.screenToCylinder[15]=-pa;
         }
         qvvr::SetShaderClipTargets(color,color);
-        qvvr::RegisterCapMesh(ib); // Cold resource allocation happens here only.
+        qvvr::CapCullVolume cull = {{0,0,0},.8f,.8f};
+        for (int box = 0; box < 3; ++box)
+        {
+            qvvr::CapBounds b = {{bounds[box][0],bounds[box][2],bounds[box][4]}, {bounds[box][1],bounds[box][3],bounds[box][5]}};
+            if (!plane) qvvr::RegisterCapMeshBounds(indexBuffers[box], b);
+            else qvvr::RegisterCapMesh(indexBuffers[box]); // Moving/unbounded fallback.
+        }
         auto frame=[&](bool enable,bool instanced,bool unbind) {
             context->OMSetRenderTargets(1,&target,dsv);
             context->OMSetDepthStencilState(depthState,23);
@@ -609,11 +652,11 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
             context->ClearRenderTargetView(target,empty);
             context->ClearDepthStencilView(dsv,D3D11_CLEAR_DEPTH,reverse?0.f:1.f,0);
             context->IASetInputLayout(layout);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            context->IASetIndexBuffer(ib,DXGI_FORMAT_R32_UINT,0);
             context->VSSetShader(vs,nullptr,0);
-            qvvr::BeginShaderClip(p,enable,reverse!=0,transparent!=0);
+            qvvr::BeginShaderClip(p,enable,reverse!=0,transparent!=0,plane?nullptr:&cull);
             context->PSSetShader(ps,nullptr,0);
-            for(int box=0;box<3;++box){auto vb=vertices[instanced?2-box:box];UINT stride=12,offset=0;context->IASetVertexBuffers(0,1,&vb,&stride,&offset);
+            for(int box=0;box<3;++box){int mesh=instanced?2-box:box;auto vb=vertices[mesh];UINT stride=12,offset=0;context->IASetVertexBuffers(0,1,&vb,&stride,&offset);
+                context->IASetIndexBuffer(indexBuffers[mesh],DXGI_FORMAT_R32_UINT,0);
                 auto table=*reinterpret_cast<void *volatile **>(context);
                 if(instanced)reinterpret_cast<void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *,UINT,UINT,UINT,INT,UINT)>(table[20])(context,36,1,0,0,0);
                 else reinterpret_cast<void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *,UINT,UINT,INT)>(table[12])(context,36,0,0);}
@@ -682,11 +725,12 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
         depthState->Release();layout->Release();vs->Release();vsCode->Release();
         target->Release();dsv->Release();color->Release();depth->Release();resolved->Release();read->Release();
     }
-    ps->Release();psCode->Release();ib->Release();
+    ps->Release();psCode->Release();for(auto ib:indexBuffers)ib->Release();
     qvvr::GetCapStats(available,registered,replayed,composed);
-    assert(registered==0&&replayed==32*11*3&&composed==32*11);
+    assert(registered==0&&replayed==16*11*4&&composed==32*11);
     printf("GPU caps: %u pixels passed; perspective/orthographic, side/height cuts, empty exterior, untouched interior, forward/reversed Z, 1x/2x MSAA, alpha/green, disabled mode, indexed/instanced, target unbind, state restoration.\n",checks);
     puts("GPU caps hot hooks: zero C++ allocations across 256 warmed synthetic frames.");
+    puts("GPU caps bounds: identical cut pixels with inside/exterior replay omitted; moving/unbounded fallback preserved.");
 }
 int main(int argc, char **argv)
 {

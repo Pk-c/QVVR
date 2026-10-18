@@ -30,7 +30,7 @@ namespace QVVR
             }
         }
 
-        // Rewrite only QV's CameraListener query, never Unity's native getter.
+        // Rewrite only CameraListener, never hair simulation or Unity's getter.
         // Iterator/reflection allocations happen while patching, not rendering.
         private static IEnumerable<CodeInstruction> ReplaceMainCamera(IEnumerable<CodeInstruction> instructions)
         {

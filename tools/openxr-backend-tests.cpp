@@ -185,7 +185,26 @@ int main() {
     // Linear shader output (~55/255) is stored through an sRGB RTV: encoded
     // bytes must round-trip to 128, NOT white from alpha division.
     assert(abs(int(last[0])-128)<=1&&abs(int(last[1])-128)<=1&&abs(int(last[2])-128)<=1&&last[3]==0);
-    ctx->Unmap(readOpaque,0);readOpaque->Release();colored->Release();
+    ctx->Unmap(readOpaque,0);
+    // Visible additive emission on an empty eye background must be decoded
+    // normally, not divided by zero; only emission gets coverage, black stays 0.
+    for (int gamma=0;gamma<2;++gamma) {
+        qvvr::SetOpenXrColorSpace(gamma!=0,false);
+        // Color-space configuration is fixed at resource creation in production;
+        // each test source must likewise get a newly classified SRV.
+        auto emission=Source(true);
+        assert(qvvr::PrepareOpenXrFrame(frame)==1&&qvvr::BeginOpenXrFrame(emission));
+        assert(qvvr::SubmitOpenXrFrame(emission,emission,unusedHead,true));
+        ctx->CopyResource(readOpaque,swaps[0].texture);
+        assert(SUCCEEDED(ctx->Map(readOpaque,0,D3D11_MAP_READ,0,&mapped)));
+        last=static_cast<unsigned char*>(mapped.pData)+31*mapped.RowPitch;
+        int colorByte=gamma?128:188,alphaByte=gamma?55:128;
+        assert(abs(int(last[0])-colorByte)<=1&&abs(int(last[1])-colorByte)<=1&&abs(int(last[2])-colorByte)<=1);
+        assert(abs(int(last[3])-alphaByte)<=1); // not a solid alpha=255 rectangle
+        ctx->Unmap(readOpaque,0);
+        emission->Release();
+    }
+    readOpaque->Release();colored->Release();qvvr::SetOpenXrColorSpace(true,false);
     assert(qvvr::PrepareOpenXrFrame(frame)==1&&qvvr::BeginOpenXrFrame(texture));
     assert(qvvr::SubmitOpenXrFrame(texture,texture,unusedHead,true));
     CheckSyntheticAlpha(swaps[0].texture); // Back to gameplay: passthrough restored.

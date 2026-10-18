@@ -11,6 +11,7 @@ $qvAllowed = @(
     '^src/(QVVR|QVVR\.Native)/(?!.*(?:^|/)(?:bin|obj|obj-direct)/).+\.(cs|csproj|cpp|h)$',
     '^src/QVVR\.Native/CMakeLists\.txt$',
     '^tools/[A-Za-z0-9_-]+\.(ps1|py|cpp)$',
+    '^tools/performance-fixture\.cs$',
     '^package-assets/(README\.txt|QVVR-THIRD-PARTY-NOTICES\.txt|qvvr-launch-options\.txt|dev\.qvvr\.prototype\.cfg|uninstall\.bat)$'
 )
 $qvChecks = [ordered]@{

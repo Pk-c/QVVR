@@ -38,6 +38,10 @@
       <HintPath>$(ReferenceDir)\UnityEngine.PhysicsModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>$(ReferenceDir)\UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.UIModule">
       <HintPath>$(ReferenceDir)\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>

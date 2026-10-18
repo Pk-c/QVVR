@@ -73,7 +73,16 @@ namespace QVVR
 
     internal static class SpatialMath
     {
+        internal static Vector3 DefaultOffset { get { return new Vector3(0f, -0.45f, 1.2f); } }
+        internal static bool LegacyDefaultOffset(Vector3 offset)
+        {
+            return Mathf.Approximately(offset.x, 0f) && Mathf.Approximately(offset.y, -0.35f) &&
+                (Mathf.Approximately(offset.z, 1.6f) || Mathf.Approximately(offset.z, 2f));
+        }
         internal static float Gain(float value) { return Finite(value) ? Mathf.Clamp(value, 0.25f, 3f) : 1f; }
+        internal static float EntryGain(float value, float fallback)
+        { return Mathf.Clamp(Finite(value) ? value : fallback, 0.25f, 1.5f); }
+        internal static float EntryBase(float actual, float gain) { return actual / EntryGain(gain, 1f); }
         internal static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
         internal static bool Finite(Vector3 value) { return Finite(value.x) && Finite(value.y) && Finite(value.z); }
         internal static bool Finite(Quaternion value)
@@ -116,19 +125,29 @@ namespace QVVR
             // clearance. Stay outside even after tilt, but allow a closer entry.
             float radius = Finite(radiusMeters) ? Mathf.Max(0f, radiusMeters) : 0.8f;
             float halfHeight = Finite(heightMeters) ? Mathf.Max(0f, heightMeters * 0.5f) : 0.4f;
-            float distance = Mathf.Max(1.25f, Mathf.Sqrt(radius * radius + halfHeight * halfHeight) + 0.5f);
-            if (!Finite(requested)) return new Vector3(0f, -0.35f, Mathf.Max(1.6f, distance));
+            // A small diorama must not be pushed back to an arbitrary 1 m floor.
+            // Keep 8 cm outside its bounding sphere (also safe after rotation).
+            float distance = Mathf.Max(0.35f, Mathf.Sqrt(radius * radius + halfHeight * halfHeight) + 0.08f);
+            if (!Finite(requested)) return new Vector3(0f, DefaultOffset.y, Mathf.Max(DefaultOffset.z, distance));
             float z = Mathf.Clamp(requested.z, distance, 6f);
             // Saved settings may come from behind/under the user while walking.
             // Reuse depth/height, but ensure the next level is in front and visible.
             return new Vector3(Mathf.Clamp(requested.x, -z * 0.35f, z * 0.35f),
-                Mathf.Clamp(requested.y, -z * 0.35f, z * 0.25f), z);
+                Mathf.Clamp(requested.y, -z * 0.5f, z * 0.25f), z);
         }
 
         internal static float EntryScale(float extent, float preferredMeters, float units)
         {
             float preferred = Finite(preferredMeters) ? Mathf.Clamp(preferredMeters, 0.05f, 4f) : 1.6f;
             return DioramaScaleState.Clamp(preferred * units / Mathf.Max(0.5f, extent));
+        }
+
+        internal static Vector3 EyePosition(Vector3 origin, Vector3 placement,
+            Quaternion trackingToWorld, Vector3 trackingEye, float units)
+        {
+            // One direct physical-space difference, never head-relative or a
+            // subtract/add of large calibrated rig terms at tiny world scales.
+            return origin + trackingToWorld * (trackingEye - placement) * units;
         }
 
         internal static Vector2 Movement(Vector2 stick, Quaternion gameToTracking,

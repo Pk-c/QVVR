@@ -69,6 +69,7 @@ $assemblies = @(
     'UnityEngine.CoreModule.dll',
     'UnityEngine.InputLegacyModule.dll',
     'UnityEngine.PhysicsModule.dll',
+    'UnityEngine.AnimationModule.dll',
     'UnityEngine.UIModule.dll',
     'UnityEngine.UI.dll',
     'UnityEngine.TextRenderingModule.dll'

@@ -41,6 +41,20 @@ namespace QVVR {
             Assert(ComfortMath.ClampPitch(-90f) == -60f && ComfortMath.ClampPitch(90f) == 60f, "Tilt must stay within comfort bounds.");
             Assert(ComfortMath.ClampPitch(float.NaN) == 0f, "NaN tilt must not corrupt camera transforms.");
             Assert(System.Math.Abs(RenderBudget.NextCapture(0f, 0f, 72) - 1f / 72f) < 0.00001f, "Menus must support 72 Hz independently of the 36 Hz HUD.");
+            Assert(RenderBudget.UiScale(1.75f)==1.75f&&1920*RenderBudget.DefaultUiScale==3360&&1080*RenderBudget.DefaultUiScale==1890,"UI-only sharper target has exact expected dimensions.");
+            Assert(RenderBudget.UiScale(float.NaN)==1.75f&&RenderBudget.UiScale(float.PositiveInfinity)==1.75f,"Invalid UI scale retains safe default.");
+            Assert(RenderBudget.UiScale(0)==1&&RenderBudget.UiScale(10)==2,"UI resolution remains bounded.");
+            Assert(RenderBudget.UpgradeUiScale(1.5f)==1.75f,"Old shipped UI default migrates once.");
+            Assert(RenderBudget.UpgradeUiScale(1)==1&&RenderBudget.UpgradeUiScale(2)==2&&RenderBudget.UpgradeUiScale(1.6f)==1.6f,"Custom UI settings must be preserved.");
+            Assert(System.Math.Abs((1.75f*1.75f)/(1.5f*1.5f)-1.361111f)<.00001f,"Increase is 36.1 percent of UI capture pixels, not the scene.");
+            Assert(RenderBudget.SceneScale(1.15f,true,1)==1,"XR stability cap prevents Sharp supersampling over budget.");
+            Assert(RenderBudget.SceneScale(.85f,true,1)==.85f,"Cap never raises a lower requested scale.");
+            Assert(RenderBudget.SceneScale(1.15f,false,1)==1.15f,"OpenVR quality is unchanged.");
+            Assert(RenderBudget.SceneScale(1.15f,true,0)==1.15f,"Cap zero restores requested XR quality.");
+            Assert(RenderBudget.SceneScale(float.NaN,true,float.NaN)==1,"Invalid scales recover safely.");
+            Assert(System.Math.Abs(1f/(1.15f*1.15f)-.7561437f)<.00001f,"Cap reduces Sharp scene pixel count by about 24.4 percent, not total GPU time.");
+            Assert(RenderBudget.NextXrCap(.5f,-1)==0&&RenderBudget.NextXrCap(0,1)==.5f,"Stability cap has a reachable off/on toggle.");
+            Assert(RenderBudget.NextXrCap(float.NaN,1)>1,"Invalid persisted cap can be adjusted from the menu.");
         }
     }
     public static class WorldGrabTests {
@@ -186,7 +200,7 @@ namespace QVVR {
 '@
 Add-Type -TypeDefinition ($source + $budgetSource.Replace('using System;', '') + $grabSource.Replace('using System;', '') + $scaleSource + $dioramaSource.Replace('using System;', '') + $latchSource + $testSource)
 [QVVR.ComfortTests]::Run()
-Write-Host 'Comfort/render budget: 20 assertions passed.'
+Write-Host 'Comfort/render budget assertions passed, including XR stability cap; HUD resolution unchanged.'
 $grabChecks = [QVVR.WorldGrabTests]::Run()
 Write-Host "World grab: $grabChecks assertions passed."
 
@@ -199,19 +213,41 @@ $checks = @{
     'GripGestureState' = @('Update', 'Reset', 'get_Mode', 'get_Reserved')
     'DioramaScaleState' = @('Update', 'Resolve', 'Stop', 'ClearOverride', 'Clamp', 'get_Active', 'get_HasOverride', 'get_Scale')
     'DioramaPlacementState' = @('Place', 'Update', 'SetScale', 'Tilt', 'Stop', 'Saved', 'Reset', 'get_Valid', 'get_Active', 'get_Dirty', 'get_Position', 'get_Rotation', 'get_Scale')
-    'SpatialMath' = @('Gain', 'Finite', 'Finite', 'Finite', 'Upright', 'HandFrame', 'VisibleOffset', 'EntryScale', 'Movement')
+    'SpatialMath' = @('Gain', 'Finite', 'Finite', 'Finite', 'Upright', 'HandFrame', 'VisibleOffset', 'EntryScale', 'Movement', 'get_DefaultOffset', 'LegacyDefaultOffset')
     'DioramaMath' = @('FollowCameraAxis', 'GreenBackground', 'FeatherWidth', 'UpgradeFeatherWidth', 'HudScale', 'ScaleViewAxis', 'ViewUnits')
     'XrInputLatch' = @('Update', 'get_RenderReady', 'get_InputReady', 'get_Busy')
     'CloudVisualRules' = @('Hide', 'Named')
     'CloudRendererFilter' = @('HideForStereo', 'Restore', 'Clear', 'get_Count')
-    'LiquidDepthPolicy' = @('UsesDepth', 'get_Count', 'get_NeedsDepth', 'Clear')
-    'MenuScenePolicy' = @('IsIntroScene', 'StereoSelection', 'State', 'CaptureCanvas')
-    'RenderBudget' = @('PresetScale', 'MsaaSamples', 'NextCapture')
-    'OpenVrRenderer' = @('LateUpdate', 'PrepareTracking', 'XrTrackedPose', 'GetXrControllerState', 'get_UsesOpenXr', 'get_NeedsOpenVrSceneFallback', 'ToUnityMatrix', 'ToUnityProjection', 'UpdateWorldGrab', 'PositionPanels', 'UpdateRig', 'UpdateLegacyRig', 'CacheHeadPose', 'UprightHeadRotation', 'MapPlayerMovement', 'ResolveCylinderCenter', 'IsControllerTracked', 'CaptureUi', 'RenderFlatScreen', 'RenderStereoGameplay', 'RenderEye', 'SafeValue', 'get_HasInputFocus', 'get_CylinderProbeMode')
+    'LiquidDepthPolicy' = @('UsesDepth', 'Visible', 'get_Count', 'get_NeedsDepth', 'Clear')
+    'DioramaBounds' = @('Finite', 'Valid', 'Intersects', 'InFrustum')
+    'DioramaVisibility' = @('HideOutside', 'Restore', 'Clear', 'get_Count', 'get_LastHidden')
+    'UiCaptureCache' = @('NeedsCapture', 'Captured', 'Continuous', 'Invalidate', 'DisableReuse', 'get_Failed', 'get_Captures', 'get_Reuses')
+    'MenuScenePolicy' = @('IsIntroScene', 'StereoSelection', 'State', 'CaptureCanvas', 'UseGameplayHud', 'HideStageDim', 'HubAdvance')
+    'IntroMenuCompatibility' = @('HubPosition', 'HideStageDim', 'RestoreStageDim')
+    'HudLayoutMath' = @('Percent', 'Anchor')
+    'LevelIntroPolicy' = @('Scene', 'Active')
+    'FixedPanelAnchor' = @('Latch', 'Reset', 'get_Valid', 'get_Position', 'get_Rotation')
+    'ControllerButtonPolicy' = @('Buttons', 'Trigger')
+    'QvCameraCompatibility' = @('GetMainCamera')
+    'CharacterVisualCompatibility' = @('Clear')
+    'TransparentEffectCompatibility' = @('Matches', 'get_Count', 'Prepare', 'Restore', 'Clear')
+    'RenderBudget' = @('PresetScale', 'MsaaSamples', 'NextCapture', 'UiScale', 'UpgradeUiScale')
+    'OpenVrRenderer' = @('LateUpdate', 'PrepareTracking', 'XrTrackedPose', 'GetXrControllerState', 'get_UsesOpenXr', 'get_NeedsOpenVrSceneFallback', 'ToUnityMatrix', 'ToUnityProjection', 'UpdateWorldGrab', 'PositionPanels', 'UpdateRig', 'UpdateLegacyRig', 'CacheHeadPose', 'UprightHeadRotation', 'MapPlayerMovement', 'ResolveCylinderCenter', 'IsControllerTracked', 'CaptureUi', 'RenderFlatScreen', 'RenderStereoGameplay', 'RenderEye', 'SafeValue', 'get_HasInputFocus', 'get_CylinderProbeMode', 'get_IsFirstLevelScene', 'get_LevelIntroCamera')
     'OpenXrFov' = @('Projection')
     'VrSettingsMenu' = @('UpdatePose')
     'OpenVrInputBridge' = @('Axis', 'Button', 'ButtonDown', 'ButtonUp', 'NegativeButton', 'NegativeButtonDown', 'NegativeButtonUp', 'AnyButton', 'AnyButtonDown', 'AnyButtonUp', 'Add', 'AddAny', 'Mask', 'State', 'MovementMask', 'BeginMovementQuery', 'BeginJumpQuery', 'EndMovementQuery', 'Stronger', 'DeadZone', 'get_ConsumeGameInput')
 }
+$checks['OpenVrRenderer'] += @('RenderPanelOverlay', 'get_UseGameShoulders')
+$checks['OpenVrRenderer'] += @('get_FixedCinemaPanel')
+$checks['MenuScenePolicy'] += @('HubHudScale', 'IsOpeningScene', 'FixedCinemaPanel')
+$checks['MenuScenePolicy'] += @('HubPauseOverlay')
+$checks['SpatialMath'] += @('EntryGain', 'EntryBase')
+$checks['SpatialMath'] += @('EyePosition')
+$checks['MenuScenePolicy'] += @('PauseDistance')
+$checks['RenderBudget'] += @('SceneScale', 'NextXrCap')
+$checks['OpenVrRenderer'] += @('TrackingEye')
+$checks['OpenVrRenderer'] += @('ProfileMark', 'ConfigureHudCommands')
+$checks['VrScreenFade'] = @('Prepare', 'Restore', 'Render', 'SceneChanged', 'get_Opacity', 'Release')
 $checkedCount = 0
 $expectedCount = ($checks.Values | ForEach-Object Count | Measure-Object -Sum).Sum
 try {

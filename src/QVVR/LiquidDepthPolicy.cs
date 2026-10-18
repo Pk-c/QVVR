@@ -7,6 +7,19 @@ namespace QVVR
     {
         private readonly List<Renderer> renderers = new List<Renderer>(16);
         internal int Count { get { return renderers.Count; } }
+        internal bool Visible(Camera camera, bool cylinder, Vector3 center, float radius, float halfHeight)
+        {
+            Matrix4x4 viewProjection = camera.projectionMatrix * camera.worldToCameraMatrix;
+            for (int i = 0; i < renderers.Count; i++)
+            {
+                Renderer renderer = renderers[i];
+                if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy ||
+                    (camera.cullingMask & (1 << renderer.gameObject.layer)) == 0) continue;
+                Bounds bounds = renderer.bounds;
+                if ((!cylinder || DioramaBounds.Intersects(bounds, center, radius, halfHeight)) && DioramaBounds.InFrustum(bounds, viewProjection)) return true;
+            }
+            return false;
+        }
         internal bool NeedsDepth
         {
             get

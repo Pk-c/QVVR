@@ -8,7 +8,26 @@ namespace QVVR
         // actual costume models, map meshes and both selection state machines.
         internal static bool IsIntroScene(string name) { return name == "001_Intro"; }
         internal static bool StereoSelection(bool enabled, bool introScene, IntroPresentation state)
-        { return enabled && introScene && (state == IntroPresentation.Costume || state == IntroPresentation.Stage); }
+        { return enabled && introScene && (state == IntroPresentation.World || state == IntroPresentation.Costume || state == IntroPresentation.Stage); }
+        // Full-scene menus use the same readable, upright HUD as gameplay.
+        // Captured 2D recovery/title panels retain their original menu settings.
+        internal static bool UseGameplayHud(bool gameplay, bool stereoMenu) { return gameplay || stereoMenu; }
+        internal static float HubHudScale(bool stereoMenu, IntroPresentation state, float normal)
+        { return stereoMenu && state == IntroPresentation.World ? 4f : normal; }
+        internal static bool HubPauseOverlay(bool introScene, IntroPresentation state)
+        { return introScene && state == IntroPresentation.Exit; }
+        internal static float PauseDistance(float value)
+        { return float.IsNaN(value) || float.IsInfinity(value) ? 1.2f : System.Math.Max(0.6f, System.Math.Min(3f, value)); }
+        internal static bool IsOpeningScene(string name) { return name == "Opening" || name == "Opening2"; }
+        internal static bool FixedCinemaPanel(bool levelIntro, bool opening) { return levelIntro || opening; }
+        internal static bool HideStageDim(bool stereoMenu, IntroPresentation state)
+        { return stereoMenu && state == IntroPresentation.Stage; }
+        internal static float HubAdvance(float depth, float scale)
+        {
+            if (float.IsNaN(depth) || float.IsInfinity(depth) || depth <= 1f) return 0f;
+            float gain = float.IsNaN(scale) || float.IsInfinity(scale) ? 0.35f : System.Math.Min(1f, System.Math.Max(0.15f, scale));
+            return depth - System.Math.Max(1f, depth * gain);
+        }
         internal static IntroPresentation State(string name)
         {
             switch (name)

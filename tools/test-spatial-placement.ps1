@@ -56,6 +56,7 @@ namespace UnityEngine {
   public static float Abs(float x){return System.Math.Abs(x);}
   public static float Sqrt(float x){return (float)System.Math.Sqrt(x);}
   public static float Clamp(float x,float a,float b){return System.Math.Max(a,System.Math.Min(b,x));}
+  public static bool Approximately(float a,float b){return System.Math.Abs(a-b)<.000001f;}
  }
 }
 namespace QVVR {
@@ -132,18 +133,49 @@ namespace QVVR {
    Check(Near(input.x,.2f)&&Near(input.y,.3f),"Analogue magnitude must not be boosted.");
    Check(Near(SpatialMath.Movement(Vector2.zero,identity,yaw,identity).magnitude,0),"Idle input remains idle.");
    var offset=SpatialMath.VisibleOffset(new Vector3(100,-100,-5),.8f,.8f);
-   Check(offset.z>=1.25f&&System.Math.Abs(offset.x)<=offset.z*.35f&&offset.y>=-offset.z*.35f,"Offscreen old layout corrected to visible front cone.");
+   Check(offset.z>=.35f&&System.Math.Abs(offset.x)<=offset.z*.35f&&offset.y>=-offset.z*.5f,"Offscreen old layout corrected to visible front cone.");
    var closer=SpatialMath.VisibleOffset(new Vector3(.2f,-.2f,.65f),.9f,.9f);
-   Check(closer.z>1.50f&&closer.z<1.51f&&Near(closer.x,.2f)&&Near(closer.y,-.2f),"Saved short reach starts around 1.5m rather than the old 2.12m; preserve lateral/vertical placement.");
+   Check(Near(closer.z,(float)System.Math.Sqrt(1.0125f)+.08f)&&Near(closer.x,.2f)&&Near(closer.y,-.2f),"Short saved reach uses an 8cm bounding-sphere margin, preserving valid lateral/vertical placement.");
+   var entry=SpatialMath.VisibleOffset(SpatialMath.DefaultOffset,.8f,.8f);
+   Check(Near(entry,new Vector3(0,-.45f,1.2f)),"Default diorama center is closer and below the eyes, without visibility guard pushing it up.");
+   Check(SpatialMath.LegacyDefaultOffset(new Vector3(0,-.35f,1.6f))&&SpatialMath.LegacyDefaultOffset(new Vector3(0,-.35f,2)),"Recognize both old untouched first-entry defaults.");
+   Check(!SpatialMath.LegacyDefaultOffset(new Vector3(.1f,-.35f,1.6f))&&!SpatialMath.LegacyDefaultOffset(new Vector3(0,-.5f,1.6f)),"Custom lateral/height settings must not be migrated.");
+   Check(!SpatialMath.LegacyDefaultOffset(new Vector3(float.NaN,0,0)),"Invalid values are not mistaken for untouched defaults.");
+   Check(Near(SpatialMath.VisibleOffset(Vector3.zero,.05f,.05f).z,.35f),"Tiny diorama is no longer pushed back to 1m.");
+   var measured=SpatialMath.VisibleOffset(new Vector3(0,-.1f,.3f),.3f,.6f);
+   Check(measured.z>.45f&&measured.z<.55f,"Small saved cylinder can spawn around half a meter, outside its bounding sphere.");
+   var anchor=new Vector3(.2f,-.1f,1f);var origin=new Vector3(120,4,-80);
+   var rotation=Quaternion.AngleAxis(37,Vector3.up)*Quaternion.AngleAxis(22,Vector3.right);
+   var inverse=Quaternion.Inverse(rotation);var eye=new Vector3(.1f,1.6f,.3f);
+   foreach(float eyeUnits in new float[]{1,70,1000}){
+    var world=SpatialMath.EyePosition(origin,anchor,inverse,eye,eyeUnits);
+    Check(Near(anchor+rotation*(world-origin)/eyeUnits,eye),"Direct eye mapping round-trips tracking at tiny world sizes.");
+    var leftEye=eye+new Vector3(-.032f,0,0);var rightEye=eye+new Vector3(.032f,0,0);
+    var leftWorld=SpatialMath.EyePosition(origin,anchor,inverse,leftEye,eyeUnits);
+    var rightWorld=SpatialMath.EyePosition(origin,anchor,inverse,rightEye,eyeUnits);
+    Check(Near((rightWorld-leftWorld).magnitude/eyeUnits,.064f),"Stereo IPD stays physically 1:1 at every diorama scale.");
+    var movedOrigin=origin+new Vector3(.2f,0,0);
+    Check(Near(SpatialMath.EyePosition(movedOrigin,anchor,inverse,eye,eyeUnits)-world,new Vector3(.2f,0,0)),"Character follow translates the eye and cylinder origin coherently.");
+   }
    var far=SpatialMath.VisibleOffset(new Vector3(.1f,-.2f,4),.8f,.8f);
    Check(Near(far.z,4)&&Near(far.x,.1f)&&Near(far.y,-.2f),"Do not shorten intentionally distant saved layouts.");
    var tall=SpatialMath.VisibleOffset(Vector3.zero,1,4);
    Check(tall.z>(float)System.Math.Sqrt(5),"Tall/tilted dioramas retain bounding-sphere clearance.");
    var invalid=SpatialMath.VisibleOffset(new Vector3(float.NaN,0,0),float.NaN,float.NaN);
-   Check(Near(invalid.z,1.6f)&&Near(invalid.y,-.35f),"Invalid entry values recover to a finite front placement.");
+   Check(Near(invalid.z,1.2f)&&Near(invalid.y,-.45f),"Invalid entry values recover to the new finite lower/closer default.");
    Check(Near(SpatialMath.EntryScale(40,1.6f,1),.04f),"First huge level fitted to reasonable physical size.");
    Check(Near(80*SpatialMath.EntryScale(80,.8f,2)/2,.8f),"Next level reuses saved physical size despite changed bounds/units.");
    Check(SpatialMath.EntryScale(40,100,1)<=.1f,"Entry fit clamps huge saved preference.");
+   Check(Near(SpatialMath.EntryGain(.85f,1),.85f)&&Near(SpatialMath.EntryGain(.8f,1),.8f),"New entry size/distance gains.");
+   Check(Near(SpatialMath.EntryGain(float.NaN,.85f),.85f)&&Near(SpatialMath.EntryGain(float.PositiveInfinity,.8f),.8f),"Invalid gains use safe defaults.");
+   Check(Near(SpatialMath.EntryGain(0,1),.25f)&&Near(SpatialMath.EntryGain(10,1),1.5f),"Entry gains are bounded away from zero.");
+   float savedSize=1.6f,savedDepth=2f;
+   for(int i=0;i<100;i++){
+    float actualSize=savedSize*.85f,actualDepth=savedDepth*.8f;
+    Check(Near(actualSize,1.36f)&&Near(actualDepth,1.6f),"Repeated entry/save must not compound shrink or forward motion.");
+    savedSize=SpatialMath.EntryBase(actualSize,.85f);savedDepth=SpatialMath.EntryBase(actualDepth,.8f);
+   }
+   Check(Near(SpatialMath.EntryBase(2,.85f)*.85f,2)&&Near(SpatialMath.EntryBase(1.5f,.8f)*.8f,1.5f),"Hand-adjusted size/depth survives next entry exactly.");
    // Inverse camera transform must leave world points fixed while head walks.
    state.Place(new Vector3(1,-.3f,2),Quaternion.AngleAxis(45,Vector3.up),.04f);
    var center=new Vector3(20,5,-10);float units=1/state.Scale;

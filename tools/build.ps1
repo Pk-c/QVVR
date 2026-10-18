@@ -19,6 +19,7 @@ $required = @(
     (Join-Path $root '.deps\unity-reference\UnityEngine.CoreModule.dll'),
     (Join-Path $root '.deps\unity-reference\UnityEngine.InputLegacyModule.dll'),
     (Join-Path $root '.deps\unity-reference\UnityEngine.PhysicsModule.dll'),
+    (Join-Path $root '.deps\unity-reference\UnityEngine.AnimationModule.dll'),
     (Join-Path $root '.deps\unity-reference\UnityEngine.UIModule.dll'),
     (Join-Path $root '.deps\unity-reference\UnityEngine.UI.dll'),
     (Join-Path $root '.deps\unity-reference\UnityEngine.TextRenderingModule.dll'),
