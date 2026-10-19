@@ -22,6 +22,11 @@ namespace QVVR
         private struct Group { internal CanvasGroup Component; internal float Alpha; internal bool Enabled, IgnoreParents; }
         private readonly List<Graphic> graphics = new List<Graphic>(128);
         private readonly List<bool> graphicEnabled = new List<bool>(128);
+        private readonly List<bool> graphicBuiltIn = new List<bool>(128);
+        private readonly List<UiMaterialWatch> materialWatches = new List<UiMaterialWatch>(128);
+        private readonly Dictionary<Graphic, UiMaterialWatch> cachedMaterialWatches = new Dictionary<Graphic, UiMaterialWatch>();
+        private readonly List<Graphic> expiredMaterialWatches = new List<Graphic>(16);
+        private readonly List<Color> graphicColors = new List<Color>(128);
         private readonly List<Canvas> canvases = new List<Canvas>(16);
         private readonly List<bool> canvasEnabled = new List<bool>(16);
         private readonly List<Pose> poses = new List<Pose>(128);
@@ -33,16 +38,23 @@ namespace QVVR
         private readonly List<Animator> foundAnimators = new List<Animator>(8);
         private readonly List<Canvas> foundCanvases = new List<Canvas>(16);
         private readonly UnityAction invalidate;
-        private bool dirty = true, customMaterial;
+        private bool dirty = true;
         internal bool Failed { get; private set; }
         internal ulong Captures { get; private set; }
         internal ulong Reuses { get; private set; }
+        internal int ContinuousReason { get; private set; } // 0=static, 1=failed, 2=material, 3=Animator.
         internal UiCaptureCache() { invalidate = Invalidate; }
         internal void Invalidate() { dirty = true; }
         internal void BeginScan()
         {
-            Clear();
-            customMaterial = false;
+            Unwatch();
+            // Retain cold-bound TMP delegates across the regular maintenance
+            // scan. Destroyed popup widgets must not retain their bound targets.
+            expiredMaterialWatches.Clear();
+            foreach (KeyValuePair<Graphic, UiMaterialWatch> pair in cachedMaterialWatches)
+                if (pair.Key == null) expiredMaterialWatches.Add(pair.Key);
+            for (int i = 0; i < expiredMaterialWatches.Count; i++) cachedMaterialWatches.Remove(expiredMaterialWatches[i]);
+            expiredMaterialWatches.Clear();
         }
         internal void Watch(Canvas canvas)
         {
@@ -67,6 +79,7 @@ namespace QVVR
                 if (graphic == null || graphics.Contains(graphic)) continue;
                 graphics.Add(graphic);
                 graphicEnabled.Add(graphic.enabled);
+                graphicColors.Add(graphic.canvasRenderer.GetColor());
                 graphic.RegisterDirtyVerticesCallback(invalidate);
                 graphic.RegisterDirtyMaterialCallback(invalidate);
                 graphic.RegisterDirtyLayoutCallback(invalidate);
@@ -76,8 +89,19 @@ namespace QVVR
                 // Only exact built-in uGUI types have the shared, non-cloning
                 // getters we support. Unknown graphics keep normal cadence.
                 System.Type type = graphic.GetType();
-                if (type != typeof(Image) && type != typeof(RawImage) && type != typeof(Text)) customMaterial = true;
-                else if (graphic.material != graphic.defaultMaterial) customMaterial = true;
+                bool builtIn = type == typeof(Image) || type == typeof(RawImage) || type == typeof(Text);
+                graphicBuiltIn.Add(builtIn);
+                UiMaterialWatch watch = null;
+                if (!builtIn)
+                {
+                    if (!cachedMaterialWatches.TryGetValue(graphic, out watch))
+                    {
+                        watch = new UiMaterialWatch(graphic);
+                        cachedMaterialWatches.Add(graphic, watch);
+                    }
+                    else watch.Refresh();
+                }
+                materialWatches.Add(watch);
             }
             for (int i = 0; i < foundRects.Count; i++)
             {
@@ -96,7 +120,8 @@ namespace QVVR
         internal bool NeedsCapture()
         {
             if (dirty || Continuous()) return true;
-            for (int i = 0; i < graphics.Count; i++) if (graphics[i] == null || graphics[i].enabled != graphicEnabled[i]) return true;
+            for (int i = 0; i < graphics.Count; i++)
+                if (graphics[i] == null || graphics[i].enabled != graphicEnabled[i] || graphics[i].canvasRenderer.GetColor() != graphicColors[i]) return true;
             for (int i = 0; i < canvases.Count; i++) if (canvases[i] == null || canvases[i].enabled != canvasEnabled[i]) return true;
             for (int i = 0; i < groups.Count; i++)
             {
@@ -114,11 +139,24 @@ namespace QVVR
         }
         private bool Continuous()
         {
-            if (Failed || customMaterial) return true;
+            ContinuousReason = 0;
+            if (Failed) { ContinuousReason = 1; return true; }
+            for (int i = 0; i < graphics.Count; i++)
+            {
+                Graphic graphic = graphics[i];
+                if (graphic == null || !graphic.enabled || !graphic.gameObject.activeInHierarchy) continue;
+                if (graphicBuiltIn[i])
+                {
+                    if (graphic.material != graphic.defaultMaterial) { ContinuousReason = 2; return true; }
+                    continue;
+                }
+                UiMaterialWatch watch = materialWatches[i];
+                if (watch == null || watch.Continuous()) { ContinuousReason = 2; return true; }
+            }
             for (int i = 0; i < animators.Count; i++)
             {
                 Animator animator = animators[i];
-                if (animator != null && animator.enabled && animator.gameObject.activeInHierarchy && animator.speed != 0f) return true;
+                if (animator != null && animator.enabled && animator.gameObject.activeInHierarchy && animator.speed != 0f) { ContinuousReason = 3; return true; }
             }
             return false;
         }
@@ -128,7 +166,11 @@ namespace QVVR
             // Animated/custom UI already keeps its original refresh rate. Do
             // not also walk every widget to build an unused static snapshot.
             if (Continuous()) { dirty = true; return; }
-            for (int i = 0; i < graphics.Count; i++) if (graphics[i] != null) graphicEnabled[i] = graphics[i].enabled;
+            for (int i = 0; i < graphics.Count; i++) if (graphics[i] != null)
+            {
+                graphicEnabled[i] = graphics[i].enabled;
+                graphicColors[i] = graphics[i].canvasRenderer.GetColor();
+            }
             for (int i = 0; i < canvases.Count; i++) if (canvases[i] != null) canvasEnabled[i] = canvases[i].enabled;
             for (int i = 0; i < groups.Count; i++)
             {
@@ -144,7 +186,7 @@ namespace QVVR
             }
             dirty = false;
         }
-        internal void Clear()
+        private void Unwatch()
         {
             for (int i = 0; i < graphics.Count; i++)
             {
@@ -154,8 +196,10 @@ namespace QVVR
                 graphic.UnregisterDirtyMaterialCallback(invalidate);
                 graphic.UnregisterDirtyLayoutCallback(invalidate);
             }
-            graphics.Clear(); graphicEnabled.Clear(); canvases.Clear(); canvasEnabled.Clear(); poses.Clear(); groups.Clear(); animators.Clear(); dirty = true;
+            graphics.Clear(); graphicEnabled.Clear(); graphicBuiltIn.Clear(); materialWatches.Clear(); graphicColors.Clear();
+            canvases.Clear(); canvasEnabled.Clear(); poses.Clear(); groups.Clear(); animators.Clear(); dirty = true;
         }
+        internal void Clear() { Unwatch(); cachedMaterialWatches.Clear(); expiredMaterialWatches.Clear(); }
         // A cache is optional, scene/controller preparation is not. Keep this
         // circuit breaker for the session, including across maintenance scans.
         internal void DisableReuse() { Failed = true; Clear(); }

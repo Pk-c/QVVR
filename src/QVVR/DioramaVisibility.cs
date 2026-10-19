@@ -41,6 +41,16 @@ namespace QVVR
             }
             return true;
         }
+        internal static bool MayCut(Bounds bounds, Vector3 center, float radius, float halfHeight)
+        {
+            if (!Intersects(bounds, center, radius, halfHeight)) return false;
+            if (!Valid(bounds) || !Finite(center.x) || !Finite(center.y) || !Finite(center.z) ||
+                !Finite(radius) || !Finite(halfHeight) || radius <= 0f || halfHeight <= 0f) return true;
+            Vector3 delta = bounds.center - center, extent = bounds.extents;
+            float x = Mathf.Abs(delta.x) + extent.x, z = Mathf.Abs(delta.z) + extent.z;
+            float inner = Mathf.Max(0f, radius - 0.05f);
+            return !(Mathf.Abs(delta.y) + extent.y < halfHeight - 0.05f && x * x + z * z < inner * inner);
+        }
     }
 
     internal sealed class DioramaVisibility

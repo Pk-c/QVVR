@@ -104,6 +104,54 @@ movement is scoped to CharacterMove movement/jump queries: walking compensates
 QV's main-camera yaw; grid-based jumping does not apply that extra cancellation.
 Other menu queries remain unrotated. Nested query scopes restore state on exceptions.
 
+`ControllerInputConfiguration` resolves `[Input]` enum bindings on configuration
+changes. A synchronized value snapshot/revision is copied once per poll; there
+is no hot reflection, parsing, hardware-name discovery or array allocation.
+FaceButtons uses normalized primary/secondary face roles (Frame XR maps the left
+D-pad down/up onto X/Y roles). TrackpadWands avoids requiring A/X buttons and
+uses trigger, application-menu and pad-click roles from OpenVR compatibility
+input. Layout selection is explicit, not automatic hardware detection. Existing
+OpenXR Frame/Touch suggestions and the 320-byte pose/action ABI remain unchanged;
+other PCVR controllers still depend on their legacy SteamVR mapping.
+
+Gameplay Fire1, Fire2, Pause, Swap, Dash, Cam and Load have distinct logical bits.
+The game consumes semantic Dash/Cam/Load directly rather than also emitting the
+gamepad-only L/R path, which would repeat commands and depends on gamepad
+detection. Load owns its chord constituents while fully held. Grips and system
+buttons cannot be assigned. Limited-button wand defaults leave the optional game
+camera/page actions unbound; physical diorama gestures are unaffected.
+
+Menu and gameplay button words are sampled separately. UI prefix/finalizer
+scopes cover pause/options/achievements, dialogs, clear screens, skip handlers and
+intro-world menus, including when the surrounding scene is stereoscopic gameplay.
+Fire1/Fire2/Confirm then use menu bindings, independent of game remaps and chord
+reservation. Menu stick axes stay unrotated and separate from left-only default
+locomotion and right-only diorama axes. Game secondary camera axes are zeroed in
+focused VR, including mirrored input in mixed mode. Diorama axes are applied once
+in renderer LateUpdate after game UI queries: yaw about the cylinder center and
+physical horizontal approach/retreat relative to the current viewer position.
+Both eyes share the updated placement, with no HMD pose filtering or world-size
+change. UI navigation reserves that frame, pause/settings/cinema/grips block
+placement, and sparse settings persistence waits for stick release.
+A UI down edge latches gameplay suppression
+until neutral, so closing a dialog/pause cannot leak a held confirm into a game
+action later in the same frame. Focus recovery, input-layout changes and VR
+settings transitions likewise require neutral input. Nested scopes restore state
+on exceptions; disconnect/release/disabled input retains original game input.
+Already-delivered hold actions retain a pending ButtonUp until consumed, including
+when a modal/jump temporarily stops game polling. All consumers in that input
+frame see the same release. This prevents dash/camera/load from becoming stuck
+when input ownership changes. Press-any-button screens observe normalized physical
+buttons independently of configured menu bindings, still excluding grips/system.
+
+`ExclusiveVrControls=true` replaces recognized Rewired actions/axes (including
+zero values) only while focused VR controllers are available, preventing a second
+Steam Input gamepad mapping from adding unrelated actions. Unknown actions and
+desktop/no-controller fallback stay untouched outside modal/gesture suppression.
+False restores mixed keyboard/gamepad merging. This is input routing only: no
+Steam Input configuration or game assembly is modified. Binding edits are file
+based; this does not add a VR rebinding editor or claim cross-headset hardware QA.
+
 Title/menu cameras render to a flat target. Screen-space canvases are redirected
 to an isolated transparent UI capture layer. Cached hierarchy/renderer lists are
 built during scene maintenance. HUD and title/menu capture rates are independent.
@@ -192,10 +240,10 @@ component search or scene-wide animation override occurs. The attempted
 DynamicBone CheckDistance camera rewrite was removed; CameraListener alone
 retains its original compatibility hook. Hair correctness and player-only
 animation/skinning cost remain unmeasured until the next manual Frame test.
-Gameplay triggers map to Rewired L/R, preserving held/down/up edges and the
-original LB+RB command. A stays confirm/jump; other presentations/settings keep
-right-trigger confirm. Grip, focus/menu suppression and keyboard/gamepad fallback
-remain independent; no new native OpenXR action or binding is required.
+Configurable gameplay triggers emit the semantic Dash/Cam/Load actions; the
+original LB+RB command is exposed through Load (default both triggers). Menu
+confirm/back/page bindings are separate. Grip, focus/menu suppression and
+desktop fallback remain independent; no native OpenXR action/ABI change is needed.
 
 Decorative cloud renderers are cached using verified signatures, temporarily
 disabled around stereo gameplay rendering, then restored in a finally block.
@@ -258,6 +306,29 @@ at 72 Hz before claiming performance improvements.
 
 ## Conservative performance pass
 
+Sector-clear movies are observed separately through the verified
+IntroWorldManager.PlayClearDirection -> IntroEventManager.PlayCinema route in
+001_Intro. The captured source is the active director child camera (the installed
+scene's CINE_LOBBY/Main Camera (1) with CinemachineBrain, not its inactive virtual
+camera rigs; the manager's unused _camera field is not serialized or assigned),
+and the exact original camera argument is kept for return. EndCinema and cold
+state recovery cover natural end, pause, skip, late injection and inactive
+directors. This reuses the fixed RGB cinematic panel, overriding stereo-menu
+routing and opaque full-scene composition only during the movie. No cylinder,
+world-grab interaction, HUD hub scale override or game-camera animation is applied
+to the panel. A scene change resets the observer. No timeline is driven or saved
+game state modified. Head/eye pose tracking remains direct.
+
+XR cadence diagnostics measure focused backend submission intervals over a
+five-second window, with a fixed 0.5 ms histogram (p95 upper bucket), runtime
+predicted period, long intervals (>1.5 period), maximum prepare-to-copy age and
+copy/EndFrame span. They are not presentation times, display drop counts or
+FPS, and must not be summed with GPU queries. Focus loss and window reads break
+the interval baseline. A separate allocation-free sampler reports ungrabbed
+player-follow and placement changes, excluding cinematic/grab/settings periods.
+These observations distinguish scheduling gaps from unintended pivot/placement
+motion; they do not filter tracking or claim a jitter fix without Frame QA.
+
 `DioramaVisibility` caches loaded MeshRenderers on scene/config maintenance.
 Once per stereo frame it tests live world AABBs against the original-game
 cylinder, with a numerical guard band. Fully exterior enabled meshes are hidden
@@ -280,13 +351,27 @@ registration; moving/unknown contributors make the entire buffer unbounded.
 The original-world cylinder volume travels in the same 64-slot queue as the eye
 clip parameters, so game-camera movement, physical placement, tilt and zoom cannot
 race a queued eye. Bounds fully inside or disjoint from the cylinder need no
-stencil replay. Enclosing/intersecting boxes retain it. Unbounded buffers keep the
-validated full replay. No per-frame registry rebuild or GPU geometry readback.
+stencil replay. Enclosing/intersecting boxes retain it.
+
+`LiveCapBounds` additionally samples current MeshRenderer bounds once per stereo
+frame, including every cached contributor of a shared index buffer (also inactive
+and mixed-material contributors). This covers QV's ordinary non-static-batched
+meshes without freezing their transforms. A union wholly inside/disjoint from the
+cylinder can omit its cap replay; invalid/destroyed contributors keep full replay.
+Mesh replacements clear all skips and request cold rediscovery. The staging
+pointer array is allocated/pinned only on cold refresh; native copies up to 256
+skip keys into the exact pose slot, then into graphics-owned storage for each eye.
+The registry generation invalidates snapshots across registration/scene changes;
+unknown/unlisted buffers and capacity excess retain full replay. No per-frame
+registry rebuild, shader mutation or GPU geometry readback. This adds live-bound
+CPU work, so retain it only if Frame A/B measurements improve.
 
 `UiCaptureCache` preserves the 3360x1890 target and mipmaps. Graphic vertex,
 material and layout callbacks invalidate it; cached local transforms, enabled
 graphics/canvases, and CanvasGroups (including ancestors) catch non-Graphic
-changes. Active Animators/custom materials conservatively keep the old cadence.
+changes. CanvasRenderer color snapshots also catch alpha/color tweens that do not
+dirty Graphic geometry. Active Animators/custom materials conservatively keep the
+old cadence; disabled/inactive graphics do not force continuous capture.
 The 0.5-second maintenance scan forces a fresh capture and covers hierarchy
 changes; global canvas discovery is cached for one second. Destroyed/hidden
 objects and transitions invalidate reuse. List-based character discovery retains
@@ -303,8 +388,19 @@ direct path does not attempt to replay CanvasRenderer geometry manually.
 UI cache discovery never reads virtual material/defaultMaterial getters on
 third-party Graphics (including TextMeshPro submeshes): these can instantiate
 materials or throw before initialization, even on inactive widgets. Only exact
-built-in Image/RawImage/Text types are inspected; other types keep normal capture
-cadence. Discovery errors trip a session circuit breaker, unregister observers
+built-in Image/RawImage/Text types are inspected through those properties.
+`UiMaterialWatch` binds the known TMP shared getters on cold discovery, without a
+compile/runtime dependency on TMP in desktop fallback. The installed getters were
+verified as direct field reads: TMP_Text.fontSharedMaterial and
+TMP_SubMeshUI.sharedMaterial. Only exact TextMeshProUGUI/TMP_SubMeshUI types in
+Unity.TextMeshPro and the stock Mobile/Distance Field or Distance Field shader
+are eligible. Full SDF with face/outline UV scrolling, unknown shaders, missing or
+replaced materials/shaders keep continuous capture. Hot checks use cached
+delegates/property IDs, never reflection, shader-name strings or material clones.
+Delegate observers survive routine scans and are reclassified only if their
+material/shader changes; destroyed widgets are pruned cold, scene/session clear
+releases all observers. Routine scans do not rebind every TMP getter.
+Other Graphic types retain normal capture cadence. Discovery errors trip a session circuit breaker, unregister observers
 and fall back to uncached captures without interrupting scene/controller
 maintenance. Disabling AdaptiveUiCapture bypasses discovery as well as reuse.
 
@@ -315,3 +411,12 @@ world, not an additive budget; spans can contain submission gaps and are delayed
 samples, not FPS or percentiles. Profiling is off by default, created cold on the
 graphics thread, and never reads an eye texture. Exterior mesh, liquid, cap and UI
 reuse counters remain available without detailed timestamps.
+
+`PostSubmitMaintenance` moves the existing cold coroutine work to a reused
+WaitForEndOfFrame yield: canvas/hierarchy scans, registry discovery and diagnostic
+formatting occur after stereo/Submit commands are queued, not while holding a new
+XR pose ahead of eye enqueue. The coroutine rechecks initialization after its
+yield. Its maximum CPU duration is logged with the scheduling flag for A/B tests.
+This is not late latching: XR wait/begin, inputs, game Update, exact eye poses and
+XR projection-layer poses keep their previous ordering and one-frame backpressure.
+No HMD smoothing, additional GPU wait or second XR/OpenVR client is introduced.

@@ -12,6 +12,7 @@ namespace QVVR
         // Full-scene menus use the same readable, upright HUD as gameplay.
         // Captured 2D recovery/title panels retain their original menu settings.
         internal static bool UseGameplayHud(bool gameplay, bool stereoMenu) { return gameplay || stereoMenu; }
+        internal static bool RenderStereoMenu(bool stereoMenu, bool cinema) { return stereoMenu && !cinema; }
         internal static float HubHudScale(bool stereoMenu, IntroPresentation state, float normal)
         { return stereoMenu && state == IntroPresentation.World ? 4f : normal; }
         internal static bool HubPauseOverlay(bool introScene, IntroPresentation state)

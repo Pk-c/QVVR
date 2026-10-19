@@ -38,6 +38,8 @@ class CylinderCaps
     struct Mesh { ID3D11Buffer *buffer; CapBounds bounds; bool bounded; };
     std::vector<Mesh> meshes; // Reserved/changed on cold registration only.
     CapCullVolume cullVolume;
+    CapSkipFrame skipFrame;
+    std::atomic<uint64_t> meshGeneration{1};
     Target *target = nullptr;
     bool initialized = false, rendered = false, dirty = false;
     std::atomic<unsigned> meshCount{0}, volumeDraws{0}, composites{0};
@@ -246,6 +248,7 @@ public:
         if (!mesh) return;
         {
             std::lock_guard<std::mutex> lock(meshMutex);
+            meshGeneration.fetch_add(1);
             for (auto &item : meshes) if (item.buffer == mesh)
             {
                 // Static batching/shared index buffers: union ALL contributors.
@@ -268,6 +271,7 @@ public:
     {
         {
             std::lock_guard<std::mutex> lock(meshMutex);
+            meshGeneration.fetch_add(1);
             for (auto item : meshes) item.buffer->Release();
             meshes.clear();
             meshCount.store(0);
@@ -276,10 +280,12 @@ public:
         for (auto &t : targets) { Drop(t.stencil); Drop(t.view); Drop(t.depth); }
     }
 
-    void Begin(const ClipParameters &clip, bool enabled, bool reversed, bool transparent, const CapCullVolume *cull = nullptr)
+    uint64_t Generation() const { return meshGeneration.load(); }
+    void Begin(const ClipParameters &clip, bool enabled, bool reversed, bool transparent, const CapCullVolume *cull = nullptr, const CapSkipFrame *skip = nullptr)
     {
         constants.clip = clip;
         cullVolume = cull ? *cull : CapCullVolume{};
+        skipFrame = skip ? *skip : CapSkipFrame{};
         constants.options[0] = reversed ? 1.f : 0.f;
         constants.options[1] = transparent ? 1.f : 0.f;
         constants.options[2] = enabled ? 1.f : 0.f;
@@ -302,6 +308,7 @@ public:
             for (const auto &mesh : meshes) if (mesh.buffer == indices)
             {
                 eligible = !mesh.bounded || CapMayIntersect(mesh.bounds, cullVolume);
+                if (eligible && skipFrame.Contains(reinterpret_cast<uintptr_t>(indices), meshGeneration.load())) eligible = false;
                 if (!eligible) skippedVolumes.fetch_add(1);
                 break;
             }

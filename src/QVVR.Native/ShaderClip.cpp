@@ -1051,6 +1051,7 @@ void SetShaderClipTargets(ID3D11Texture2D *left, ID3D11Texture2D *right)
 void RegisterCapMesh(ID3D11Buffer *indices) { cylinderCaps.RegisterMesh(indices); }
 void RegisterCapMeshBounds(ID3D11Buffer *indices, const CapBounds &bounds) { cylinderCaps.RegisterMesh(indices, &bounds); }
 void ClearCapMeshes() { cylinderCaps.ClearMeshes(); }
+uint64_t GetCapRegistryGeneration() { return cylinderCaps.Generation(); }
 void CompositeShaderCaps()
 {
     if (!context || !clipping || !worldTarget || !cylinderCaps.Active()) return;
@@ -1059,11 +1060,11 @@ void CompositeShaderCaps()
 void GetCapStats(unsigned &available, unsigned &registered, unsigned &replayed, unsigned &composed)
 { cylinderCaps.Stats(available, registered, replayed, composed); }
 void GetCapCullStats(unsigned &bounded, unsigned &skipped) { cylinderCaps.CullStats(bounded, skipped); }
-void BeginShaderClip(const ClipParameters &parameters, bool caps, bool reversedZ, bool transparent, const CapCullVolume *cull)
+void BeginShaderClip(const ClipParameters &parameters, bool caps, bool reversedZ, bool transparent, const CapCullVolume *cull, const CapSkipFrame *skip)
 {
     if (!context || clipping)
         return;
-    cylinderCaps.Begin(parameters, caps, reversedZ, transparent, cull);
+    cylinderCaps.Begin(parameters, caps, reversedZ, transparent, cull, skip);
     CollectWorldConstants();
     diagnosticArmed = diagnosticQuery && !diagnosticCaptured && parameters.limits[0] > 4.f && parameters.limits[0] < 1e20f;
     if (diagnosticArmed) diagnostic.parameters = parameters;

@@ -1,9 +1,11 @@
 #pragma once
+#include "FramePacingStats.h"
 #include "openvr.h"
 #include <d3d11.h>
 #include <cstdint>
 namespace qvvr
 {
+FramePacingSnapshot ReadOpenXrPacing();
 struct OpenXrHand
 {
     vr::HmdMatrix34_t pose;

@@ -1,11 +1,25 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace qvvr
 {
 struct CapBounds { float minimum[3], maximum[3]; };
 struct CapCullVolume { float center[3] = {}; float radius = 0, halfHeight = 0; };
+struct CapSkipFrame
+{
+    static constexpr unsigned Capacity = 256;
+    uint64_t generation = 0;
+    unsigned count = 0;
+    uintptr_t buffers[Capacity] = {};
+    bool Contains(uintptr_t buffer, uint64_t currentGeneration) const
+    {
+        if (generation != currentGeneration) return false;
+        for (unsigned i = 0; i < count && i < Capacity; ++i) if (buffers[i] == buffer) return true;
+        return false;
+    }
+};
 inline bool ValidCapBounds(const CapBounds &b)
 {
     for (int i = 0; i < 3; ++i)

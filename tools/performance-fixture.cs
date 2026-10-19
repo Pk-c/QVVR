@@ -33,8 +33,15 @@ namespace UnityEngine {
  public static class Mathf {public static float Max(float a,float b){return System.Math.Max(a,b);}public static float Abs(float a){return System.Math.Abs(a);}}
  public struct Scene {public bool Valid,isLoaded;public bool IsValid(){return Valid;}}
  public class GameObject {public Scene scene=new Scene{Valid=true,isLoaded=true};public bool activeInHierarchy=true;public int layer;}
- public class Shader {public string name;}
- public class Material {public Shader shader;public int renderQueue=2000;}
+ public struct Color {
+  public float a;public static bool operator==(Color a,Color b){return a.a==b.a;}public static bool operator!=(Color a,Color b){return !(a==b);}
+  public override bool Equals(object o){return o is Color&&(Color)o==this;}public override int GetHashCode(){return a.GetHashCode();}
+ }
+ public class Shader {public string name;public static int PropertyToID(string name){return name.GetHashCode();}}
+ public class Material {
+  public Shader shader;public int renderQueue=2000;public System.Collections.Generic.Dictionary<int,float> Floats=new System.Collections.Generic.Dictionary<int,float>();
+  public float GetFloat(int id){float v;return Floats.TryGetValue(id,out v)?v:0;}
+ }
  public class Renderer {public GameObject gameObject=new GameObject();public Material[] sharedMaterials=new Material[0];public bool enabled=true;public Bounds bounds;}
  public class Mesh {public System.IntPtr Buffer;public System.IntPtr GetNativeIndexBufferPtr(){return Buffer;}}
  public class MeshFilter {public Mesh sharedMesh;}
@@ -58,7 +65,9 @@ namespace UnityEngine {
  }
 }
 namespace UnityEngine.UI {
+ public class CanvasRenderer {public UnityEngine.Color Color;public UnityEngine.Color GetColor(){return Color;}}
  public class Graphic {
+  public UnityEngine.GameObject gameObject=new UnityEngine.GameObject();public CanvasRenderer canvasRenderer=new CanvasRenderer();
   public bool enabled=true;public virtual UnityEngine.Material material{get;set;}public virtual UnityEngine.Material defaultMaterial{get;set;}
   UnityEngine.Events.UnityAction vertices,materials,layout;
   public int Listeners;
@@ -74,6 +83,7 @@ namespace UnityEngine.UI {
  public class RawImage:Graphic {}
  public class Text:Graphic {}
  public class UninitializedSubMesh:Graphic {
+  public UnityEngine.Material Shared;
   public int MaterialReads;
   public override UnityEngine.Material material{get{MaterialReads++;throw new System.ArgumentNullException("source");}set{throw new System.InvalidOperationException("Do not mutate materials");}}
   public override UnityEngine.Material defaultMaterial{get{MaterialReads++;throw new System.InvalidOperationException("Unsupported virtual getter");}set{}}

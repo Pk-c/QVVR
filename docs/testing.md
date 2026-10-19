@@ -223,6 +223,20 @@ log samples are isolated diagnostics, not statistical performance summaries.
 
 ## Performance pass validation
 
+Additional sector/cadence checks: `tools/test-sector-cinema.ps1 -GameDir <QV>`
+checks production movie lifecycle logic plus read-only installed hook metadata;
+`tools/test-frame-pacing.ps1` checks interval/gap/percentile/queue/reset policies
+and hot native allocations. Clear a sector, verify its movie is on a stationary
+flat panel (also while turning/tilting the head), pause/skip/finish it, then
+verify restoration of the original stereo hub/menu and normal subsequent levels.
+Test late injection during a movie and toggling stereo selection menus off.
+For jitter comparison, record separate idle/orbit and walking windows, at the
+same scene/scale/caps settings, without grips or the settings menu. Compare
+submission p95/max/long gaps and queue age to GPU time, and ungrabbed pivot vs
+placement steps. Walking pivot motion is expected. Busy Unity iterations alone
+are not displayed frame drops. Sector/movie and stability diagnostics still need
+Frame visual/timing validation; no automatic launch is authorized by these tests.
+
 Run `tools/build.ps1`, `tools/test-performance.ps1`, `tools/test-comfort.ps1`,
 `tools/test-liquid-depth.ps1`, `tools/test-character-visuals.ps1`,
 `tools/test-render-corrections.ps1`, and `tools/test-shader-clip.ps1`.
@@ -235,13 +249,23 @@ clip-volume integration and finally-based state restoration. These are NOT
 Unity/headset rendering or throughput benchmarks.
 
 Regression: a TMP-like Graphic with throwing virtual material/defaultMaterial
-getters is never queried, inactive or active. Unsupported graphics retain normal
-capture cadence; a failed cache releases callbacks and stays disabled across
+getters is never queried, inactive or active. Inactive/disabled unknown graphics
+no longer force continuous capture; active unsupported graphics retain normal
+capture cadence. Dynamic test types in a separate Unity.TextMeshPro assembly
+exercise the production cold delegate binding, including null shared materials,
+shared material/shader replacements and time-driven full-SDF UV scrolling. Known
+static TMP text can reuse its capture, while dirty callbacks and CanvasRenderer
+color/alpha tweens invalidate it. With `-GameDir`, the performance test also
+verifies both installed TMP shared getters are direct, non-cloning field reads.
+A failed cache releases callbacks and stays disabled across
 scans. A compiled catch guard prevents optional cache discovery from killing the
 maintenance coroutine (which also refreshes the gameplay target and materials).
 
 Independent `[Performance]` rollback flags (default true):
 `CullOutsideDiorama`, `AdaptiveUiCapture`, `DirectHudOverlay`.
+`LiveCapBounds` independently controls the new ordinary-mesh cap pruning (requires
+CullOutsideDiorama). `PostSubmitMaintenance` controls moving cold maintenance
+after stereo enqueue. Both default true and can be compared independently.
 Set a flag false in the config while QV is closed, then start QV manually for a
 controlled comparison. `BlackCutSurfaces` remains the separate cap-effect switch.
 `DetailedGpuTimings=false` is the default; enable it before a manual launch to
@@ -263,10 +287,72 @@ VR transition fades. No frozen UI or hair regression. If any scene fails, keep
 its corresponding switch off pending a targeted fix.
 
 Counters report exterior meshes omitted, liquid depth requirements/eye counts,
-HUD captures/reuses, bounded static buffers and cumulative pruned cap replays.
+HUD captures/reuses and continuous-fallback reason (static/failed/material/Animator),
+bounded static buffers, live skip-buffer count and cumulative pruned cap replays.
+Live cap tests include moving/shared contributors, invalid bounds, enclosing
+terrain, mesh replacement/recovery and clear/unpin lifecycle. WARP compares the
+same cut pixels with live skips, empty skips and a stale registry generation,
+checks that caller storage is copied, and verifies actual replay-count reductions.
+Compiled IL checks cap snapshot ordering and the reused end-of-frame yield before
+cold scans. No speedup follows from these correctness checks alone.
+
+Use the previous Frame run as the baseline: HUD captures/reuses were 9243/0,
+bounded static buffers and cap skips were zero. In steady gameplay, focused
+submission windows had p95 buckets around 17-18.5 ms and maxima around 30-44 ms,
+despite an idle ungrabbed diorama transform remaining stationary. These are
+submission cadence observations, not compositor display drops. For the next
+manual test, verify UI reuse/live cap skips actually increase, compare CPU/GPU
+times and submission p95/maximum at 72 Hz, and record the post-submit maintenance
+CPU maximum. Check idle/orbit separately from walking and scene transitions.
 Shared or moving buffers may legitimately prevent cap pruning. Geometry
 submission and UI snapshot checking add CPU work; keep only changes that improve
 measured Frame timing. Do not claim a speedup from synthetic correctness tests.
+
+## Portable input regression checks
+
+Run `tools/test-controller-input.ps1` (optionally `-GameDir` for read-only installed
+QV metadata checks), `tools/test-render-corrections.ps1`, and `tools/test-comfort.ps1`
+after the canonical build. The controller fixture compiles the actual bridge,
+configuration and policies with API doubles. It checks both presets through real
+polling/query code, press/hold/release edges, UI scope nesting, custom gameplay vs
+menu remaps, held-confirm suppression after resume/dialogs, trigger-chord ownership,
+stick separation, Steam Input mirror replacement, mixed-mode/unknown-action
+fallback, focus/controller loss/reconnect, VR settings, grips and release. It
+measures zero warmed managed allocations for 512 polling/button/axis iterations;
+this .NET test is not a Unity/Mono or headset timing benchmark. IL allocation
+guards cover the new policy/query/snapshot helpers. Installed metadata guards
+verify the game's semantic actions and known UI query methods.
+
+Frame manual acceptance: verify right A primary/confirm, B secondary/back without
+pausing, left D-pad up pause, left D-pad down swap, right trigger dash, left trigger
+camera and both triggers Load. Confirm the trigger chord does not also keep dash
+or camera active. Use either stick in pause/options/dialogs; outside UI, only the
+configured locomotion stick should move the character. Enter/exit dialogs, pause,
+cinematics and QVVR settings with controls held; release/repress must recover input
+without a leaked action. Test the interactive 3D intro hub and page triggers too.
+Keep grips reserved for placement and verify desktop/focus-loss fallback. Change
+individual bindings with QV closed and relaunch manually; preserve saved comfort
+and placement settings.
+
+Right-stick placement: verify left/right rotates about the diorama center (not
+the viewer), forward approaches and backward retreats at unchanged height/size.
+Walk around the placed world and repeat; direction must remain relative to the
+current viewer. Check UI navigation, pause, focus return, cinema and two-grip
+priority without accidental placement or mirrored game camera input. Speeds are
+configured in physical meters/second and degrees/second in [Input]. Release the
+stick and reload a level to verify sparse saved placement. Compare idle and
+continuous-stick CPU/GPU timings at 72 Hz on Frame; automated tests are not
+hardware validation. The spatial fixture checks actual placement math including
+distance limits, existing out-of-range grab positions, scale independence and
+stall/invalid-input safety; comfort IL guards cover the new hot methods.
+
+For another headset/controller, first verify the runtime's normalized role mapping
+and select FaceButtons or TrackpadWands. Test every configured action, tap/hold/up,
+trackpad/stick axes, grip gestures and settings access on physical hardware.
+Wand defaults deliberately leave optional game camera/menu page buttons unbound;
+confirm navigation remains usable or assign explicit page buttons for the game
+screen in question. Preset tests alone do not establish device compatibility,
+OpenXR passthrough support or acceptable Frame CPU/GPU timing.
 
 ## Reporting safely
 

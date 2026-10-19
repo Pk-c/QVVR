@@ -111,7 +111,7 @@ XrResult XRAPI_CALL xrBeginSession(XrSession, const XrSessionBeginInfo*) { asser
 XrResult XRAPI_CALL xrEndSession(XrSession) { assert(running && phase==0); running=false; return XR_SUCCESS; }
 XrResult XRAPI_CALL xrWaitFrame(XrSession, const XrFrameWaitInfo*, XrFrameState *out) {
     assert(running && phase==0); if(failWait) return XR_ERROR_RUNTIME_FAILURE;
-    waits++; phase=1; predicted+=100; out->predictedDisplayTime=predicted; out->shouldRender=render; return XR_SUCCESS;
+    waits++; phase=1; predicted+=100; out->predictedDisplayTime=predicted; out->predictedDisplayPeriod=13888889; out->shouldRender=render; return XR_SUCCESS;
 }
 XrResult XRAPI_CALL xrBeginFrame(XrSession, const XrFrameBeginInfo*) { assert(phase==1); phase=2; begins++; return XR_SUCCESS; }
 XrResult XRAPI_CALL xrLocateViews(XrSession, const XrViewLocateInfo *l, XrViewState *s, uint32_t capacity, uint32_t *count, XrView *out) {
@@ -208,6 +208,10 @@ int main() {
     assert(qvvr::PrepareOpenXrFrame(frame)==1&&qvvr::BeginOpenXrFrame(texture));
     assert(qvvr::SubmitOpenXrFrame(texture,texture,unusedHead,true));
     CheckSyntheticAlpha(swaps[0].texture); // Back to gameplay: passthrough restored.
+    auto cadence=qvvr::ReadOpenXrPacing();
+    assert(cadence.periodMs>13&&cadence.periodMs<15&&cadence.intervals>0);
+    assert(cadence.maximumQueueAgeMs>=0&&cadence.maximumCopySubmitMs>=0);
+    assert(qvvr::ReadOpenXrPacing().intervals==0); // Window read never mutates the latched XR frame.
     gripValue=0; assert(qvvr::PrepareOpenXrFrame(frame)==1 && (frame.rightHand.buttons&8)!=0 && frame.rightHand.grip==0);
     qvvr::CancelOpenXrFrame(); gripValue=.9f;
     render=false; assert(!qvvr::PrepareOpenXrFrame(frame) && phase==0); render=true;

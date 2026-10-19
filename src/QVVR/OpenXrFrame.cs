@@ -5,6 +5,12 @@ using Valve.VR;
 
 namespace QVVR
 {
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct OpenXrPacing
+    {
+        internal ulong Intervals, LongGaps;
+        internal double AverageMs, MaximumMs, P95UpperMs, PeriodMs, MaximumQueueAgeMs, MaximumCopySubmitMs;
+    }
     // Blittable snapshots: no marshalled arrays, strings or managed bools.
     // Matrix34 is only a data format here; exclusive XR never calls OpenVR.
     [StructLayout(LayoutKind.Sequential)]

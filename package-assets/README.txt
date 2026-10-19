@@ -35,10 +35,27 @@ Steam launch options for the Windows build on Steam Frame:
 
 Controls:
   F7: recenter. F8: toggle VR/desktop.
-  Right A: confirm/jump. Right B: back.
-  Gameplay index triggers: left LB, right RB, both LB+RB. Grips are unchanged.
-  Menus/cinema/VR settings retain right-trigger confirm.
+  [Input] Layout=FaceButtons: A primary/confirm, B secondary/back, Y pause,
+  X character swap. Frame XR left D-pad down/up supplies X/Y roles.
+  Right trigger: dash. Left trigger: game camera. Both: load (LB+RB action).
+  Menu triggers: previous/next page, not confirm. A confirms menus/dialogs.
+  Left stick: viewer-relative movement. Right stick: horizontal rotates the
+  diorama about its center; forward brings it closer, backward moves it away.
+  Height and size stay unchanged. Menus retain stick navigation.
+  [Input] DioramaStick selects the placement stick (default Right);
+  DioramaStickTurnDegreesPerSecond=60, DioramaStickMoveMetersPerSecond=0.6.
+  The old CameraStick setting is ignored; game secondary camera axes are disabled.
   Both stick clicks: open/close QVVR settings.
+  Layout=TrackpadWands: right trigger primary/confirm, right application-menu
+  secondary/back, left application-menu pause, left pad click swap, left trigger
+  dash, right pad click VR settings. Both triggers load. Optional camera/page
+  bindings are unbound in this limited-button preset; individual overrides work.
+  All actions and stick sources can be rebound in [Input]; Default follows the
+  preset, None disables. Existing OpenVR legacy mapping must expose these roles.
+  Presets have synthetic tests; other-headset hardware QA is still required.
+  ExclusiveVrControls=true prevents Steam Input mirror actions while focused
+  VR controllers are available. False restores mixed keyboard/gamepad input.
+  Original desktop/no-controller input remains. Grips/system buttons are reserved.
   Menu up/down: select. Left/right: adjust. Closing saves settings.
   Both grips: natural translation, hand-separation size, hand/wrist rotation.
   Release either grip to retain the pose. Right grip alone does not manipulate.

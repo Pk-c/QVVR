@@ -3,6 +3,7 @@
 #include "OpenXrBackend.h"
 #include "EyeCopyShader.h"
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
@@ -34,6 +35,13 @@ XrPath handPaths[2] = {};
 bool frameControllerProfile = false;
 XrView locatedViews[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 XrTime displayTime = 0;
+FramePacingStats pacingStats;
+double framePreparedMs = 0, framePeriodMs = 0;
+bool frameFocused = false;
+double SteadyMilliseconds()
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 XrSessionState state = XR_SESSION_STATE_UNKNOWN;
 ID3D11Device *device = nullptr;
 ID3D11DeviceContext1 *context = nullptr;
@@ -72,6 +80,7 @@ template <typename T> void Release(T *&pointer)
 }
 void Destroy()
 {
+    pacingStats.ReadAndReset(); framePreparedMs = framePeriodMs = 0;
     selected.store(false);
     for (auto &eye : eyes)
     {
@@ -683,6 +692,8 @@ int PrepareOpenXrFrame(OpenXrFrame &snapshot)
         return false;
     }
     displayTime = frame.predictedDisplayTime;
+    framePeriodMs = frame.predictedDisplayPeriod / 1000000.0;
+    frameFocused = state == XR_SESSION_STATE_FOCUSED;
     shouldRender = frame.shouldRender == XR_TRUE;
     frameBegun.store(true);
     if (!shouldRender) { CancelOpenXrFrame(); return false; }
@@ -726,12 +737,14 @@ int PrepareOpenXrFrame(OpenXrFrame &snapshot)
     snapshot.rightFov = {r.angleLeft, r.angleRight, r.angleUp, r.angleDown};
     SampleHand(0, snapshot.leftHand);
     SampleHand(1, snapshot.rightHand);
+    framePreparedMs = SteadyMilliseconds();
     return true;
 }
 bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::HmdMatrix34_t &, bool flip, bool opaqueScene)
 {
     if (!frameBegun)
         return false;
+    double copyStarted = SteadyMilliseconds();
     bool copied = shouldRender && CopyEye(0, left, flip, opaqueScene) && CopyEye(1, right, flip, opaqueScene);
     XrCompositionLayerProjectionView views[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                                  {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
@@ -758,6 +771,7 @@ bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::
     end.layerCount = copied ? 1 : 0;
     end.layers = copied ? layers : nullptr;
     bool ended = Check(xrEndFrame(session, &end));
+    if (ended && copied) pacingStats.Record(SteadyMilliseconds(), framePreparedMs, copyStarted, framePeriodMs, frameFocused);
     // Release the snapshot only AFTER the runtime consumes these exact views.
     frameBegun.store(false, std::memory_order_release);
     if (!ended || (shouldRender && !copied))
@@ -768,6 +782,7 @@ bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::
     }
     return true;
 }
+FramePacingSnapshot ReadOpenXrPacing() { return pacingStats.ReadAndReset(); }
 void ShutdownOpenXr()
 {
     Destroy();

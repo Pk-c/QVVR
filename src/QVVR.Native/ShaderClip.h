@@ -16,12 +16,13 @@ bool PatchCylinderShader(const void *bytes, size_t length, std::vector<std::uint
                          bool opaque = false, bool premultiplied = false);
 bool InstallShaderClip(ID3D11Device *device);
 void SetShaderClipTargets(ID3D11Texture2D *left, ID3D11Texture2D *right);
-void BeginShaderClip(const ClipParameters &parameters, bool caps = false, bool reversedZ = false, bool transparent = false, const CapCullVolume *cull = nullptr);
+void BeginShaderClip(const ClipParameters &parameters, bool caps = false, bool reversedZ = false, bool transparent = false, const CapCullVolume *cull = nullptr, const CapSkipFrame *skip = nullptr);
 void EndShaderClip();
 void CompositeShaderCaps();
 void RegisterCapMesh(ID3D11Buffer *indices);
 void RegisterCapMeshBounds(ID3D11Buffer *indices, const CapBounds &bounds);
 void ClearCapMeshes();
+uint64_t GetCapRegistryGeneration();
 void GetCapStats(unsigned &available, unsigned &registered, unsigned &replayed, unsigned &composed);
 void GetCapCullStats(unsigned &bounded, unsigned &skipped);
 void GetShaderClipStats(unsigned &patched, unsigned &rejected, unsigned &unknown, unsigned &depthOnly);

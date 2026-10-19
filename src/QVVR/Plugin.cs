@@ -21,6 +21,7 @@ namespace QVVR
         internal ConfigEntry<float> EyeTextureResolutionScale;
         internal ConfigEntry<bool> FlipEyeTextureY;
         internal ConfigEntry<bool> VrControllerInput;
+        internal ControllerInputConfiguration InputControls;
         internal ConfigEntry<bool> TwoGripWorldGrab;
         internal ConfigEntry<bool> RightGripWorldGrab;
         internal ConfigEntry<float> RightGripTranslationGain;
@@ -58,7 +59,7 @@ namespace QVVR
         internal ConfigEntry<bool> DisableVSync;
         internal ConfigEntry<bool> CompositorFramePacing;
         internal ConfigEntry<bool> DisableRealtimeShadows;
-        internal ConfigEntry<bool> CullOutsideDiorama, AdaptiveUiCapture, DirectHudOverlay, DetailedGpuTimings;
+        internal ConfigEntry<bool> CullOutsideDiorama, AdaptiveUiCapture, DirectHudOverlay, DetailedGpuTimings, PostSubmitMaintenance, LiveCapBounds;
         internal ConfigEntry<int> UiCaptureRate;
         internal ConfigEntry<int> MenuCaptureRate;
         internal ConfigEntry<float> UiTextureScale;
@@ -158,6 +159,7 @@ namespace QVVR
                 "Invert the submitted eye texture V bounds for Unity D3D11 render targets.");
             VrControllerInput = Config.Bind("Controls", "VrControllerInput", true,
                 "Bridge OpenVR controller sticks and buttons into QV's Rewired actions.");
+            InputControls = new ControllerInputConfiguration(Config);
             TwoGripWorldGrab = Config.Bind("Controls", "TwoGripWorldGrab", true,
                 "In gameplay, hold both grips to translate, resize and rotate the diorama using the shared hand frame. Release either grip to retain the pose; sensitivity is configurable.");
             DioramaMoveSensitivity = Config.Bind("Controls", "DioramaMoveSensitivity", 1.15f,
@@ -238,13 +240,17 @@ namespace QVVR
             DisableRealtimeShadows = Config.Bind("Performance", "DisableRealtimeShadowsInVr", true,
                 "Disable repeated realtime shadow-map rendering in VR; original shadow setting is restored on fallback.");
             CullOutsideDiorama = Config.Bind("Performance", "CullOutsideDiorama", true,
-                "Conservatively omit cached scene meshes outside the cylinder during stereo draws only. Also prune invisible liquid depth and immutable static-batch cap bounds. Live A/B switch; original states restored after both eyes.");
+                "Conservatively omit cached scene meshes outside the cylinder during stereo draws only. Also prune invisible liquid depth and eligible cap bounds. Live A/B switch; original states restored after both eyes.");
+            LiveCapBounds = Config.Bind("Performance", "LiveCapBounds", true,
+                "Sample live shared-mesh bounds once per stereo frame to omit cap replays that cannot cross the cylinder. Requires CullOutsideDiorama. Disable for a controlled cap-cost comparison.");
             AdaptiveUiCapture = Config.Bind("Performance", "AdaptiveUiCapture", true,
                 "Reuse unchanged full-resolution HUD captures. Dirty graphics, transforms, CanvasGroups, animation and custom materials retain updates at the configured capture rate. Live A/B switch.");
             DirectHudOverlay = Config.Bind("Performance", "DirectHudOverlay", true,
                 "Draw the ordinary captured HUD quad at the end of each world camera instead of rendering another camera. Settings canvas and flat scenes keep the validated camera path. Live A/B switch.");
             DetailedGpuTimings = Config.Bind("Performance", "DetailedGpuTimings", false,
                 "Enable nonblocking GPU timestamps for UI, world eyes, depth, HUD and XR copy; log every 5 seconds. Diagnostic overhead; requires restart. No eye texture readback.");
+            PostSubmitMaintenance = Config.Bind("Performance", "PostSubmitMaintenance", true,
+                "Move cold UI/scene scans and diagnostics after stereo enqueue, outside the fresh-pose-to-eye path. Disable for a controlled scheduling comparison; no head-pose smoothing.");
             UiCaptureRate = Config.Bind("Performance", "UiCaptureRate", 36,
                 "Maximum GPU capture refresh for gameplay and stereo intro HUD; HMD/eye tracking remains compositor-paced.");
             MenuCaptureRate = Config.Bind("Performance", "MenuCaptureRate", 72,
@@ -268,6 +274,7 @@ namespace QVVR
 
         private void OnDestroy()
         {
+            if (InputControls != null) InputControls.Dispose();
             if (vrManager != null)
                 Destroy(vrManager);
         }

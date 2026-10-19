@@ -642,7 +642,16 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
             if (!plane) qvvr::RegisterCapMeshBounds(indexBuffers[box], b);
             else qvvr::RegisterCapMesh(indexBuffers[box]); // Moving/unbounded fallback.
         }
-        auto frame=[&](bool enable,bool instanced,bool unbind) {
+        qvvr::CapSkipFrame skip, stale;
+        skip.generation = qvvr::GetCapRegistryGeneration();
+        // Mirrors the managed live-bounds union: only interior/exterior meshes.
+        skip.count = 2; skip.buffers[0] = reinterpret_cast<uintptr_t>(indexBuffers[1]);
+        skip.buffers[1] = reinterpret_cast<uintptr_t>(indexBuffers[2]);
+        stale = skip; --stale.generation;
+        stale.count = 3; stale.buffers[2] = reinterpret_cast<uintptr_t>(indexBuffers[0]);
+        assert(skip.Contains(skip.buffers[0], skip.generation));
+        assert(!stale.Contains(stale.buffers[2], skip.generation));
+        auto frame=[&](bool enable,bool instanced,bool unbind,const qvvr::CapSkipFrame *snapshot=nullptr) {
             context->OMSetRenderTargets(1,&target,dsv);
             context->OMSetDepthStencilState(depthState,23);
             context->OMSetBlendState(nullptr,nullptr,0xffffffff);
@@ -653,7 +662,9 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
             context->ClearDepthStencilView(dsv,D3D11_CLEAR_DEPTH,reverse?0.f:1.f,0);
             context->IASetInputLayout(layout);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context->VSSetShader(vs,nullptr,0);
-            qvvr::BeginShaderClip(p,enable,reverse!=0,transparent!=0,plane?nullptr:&cull);
+            qvvr::CapSkipFrame payload = snapshot ? *snapshot : qvvr::CapSkipFrame{};
+            qvvr::BeginShaderClip(p,enable,reverse!=0,transparent!=0,plane?nullptr:&cull,&payload);
+            payload = {}; // Caller storage may change; the graphics snapshot must not.
             context->PSSetShader(ps,nullptr,0);
             for(int box=0;box<3;++box){int mesh=instanced?2-box:box;auto vb=vertices[mesh];UINT stride=12,offset=0;context->IASetVertexBuffers(0,1,&vb,&stride,&offset);
                 context->IASetIndexBuffer(indexBuffers[mesh],DXGI_FORMAT_R32_UINT,0);
@@ -669,9 +680,12 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
                 UINT ref;ID3D11DepthStencilState *actualDepth=nullptr;context->OMGetDepthStencilState(&actualDepth,&ref);
                 assert(actualDepth==depthState&&ref==23);actualDepth->Release();}
         };
-        for(int mode=0;mode<4;++mode)
+        for(int mode=0;mode<7;++mode)
         {
-            frame(mode!=0,mode==2,mode==3);
+            unsigned beforeDraws=0; qvvr::GetCapStats(available,registered,beforeDraws,composed);
+            frame(mode!=0,mode==2,mode==3,mode==4?&skip:mode==5?&stale:nullptr);
+            qvvr::GetCapStats(available,registered,replayed,composed);
+            assert(replayed-beforeDraws == (mode==0?0u:!plane||mode==4?1u:3u));
             if(ms>1)context->ResolveSubresource(resolved,0,color,0,DXGI_FORMAT_R8G8B8A8_UNORM);
             else context->CopyResource(resolved,color);
             context->CopyResource(read,resolved);
@@ -717,7 +731,7 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
         }
         // No managed path here; no C++ allocation in warmed production hooks.
         hotAllocations.store(0);trackAllocations.store(true);
-        for(int i=0;i<8;++i)frame(true,false,false);
+        for(int i=0;i<8;++i)frame(true,false,false,&skip);
         trackAllocations.store(false);assert(hotAllocations.load()==0);
         qvvr::ClearCapMeshes();qvvr::SetShaderClipTargets(nullptr,nullptr);
         context->ClearState();
@@ -727,10 +741,10 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
     }
     ps->Release();psCode->Release();for(auto ib:indexBuffers)ib->Release();
     qvvr::GetCapStats(available,registered,replayed,composed);
-    assert(registered==0&&replayed==16*11*4&&composed==32*11);
+    assert(registered==0&&replayed==16*(24+14)&&composed==32*14);
     printf("GPU caps: %u pixels passed; perspective/orthographic, side/height cuts, empty exterior, untouched interior, forward/reversed Z, 1x/2x MSAA, alpha/green, disabled mode, indexed/instanced, target unbind, state restoration.\n",checks);
     puts("GPU caps hot hooks: zero C++ allocations across 256 warmed synthetic frames.");
-    puts("GPU caps bounds: identical cut pixels with inside/exterior replay omitted; moving/unbounded fallback preserved.");
+    puts("GPU caps bounds: identical cut pixels with static/live interior/exterior replay omitted; stale-generation/empty snapshots fail open, caller storage is copied, moving/unbounded fallback preserved.");
 }
 int main(int argc, char **argv)
 {

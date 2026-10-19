@@ -8,10 +8,6 @@ $rendererSource=Get-Content (Join-Path $root 'src/QVVR/OpenVrManager.cs') -Raw
 $start=$rendererSource.IndexOf('        private static void RenderPanelOverlay(')
 $end=$rendererSource.IndexOf('        private void ProfileMark(', $start)
 $overlay=$rendererSource.Substring($start,$end-$start).Replace('private static void','public static void')
-$inputSource=Get-Content (Join-Path $root 'src/QVVR/OpenVrInputBridge.cs') -Raw
-$start=$inputSource.IndexOf('        private static uint Mask(')
-$end=$inputSource.IndexOf('        private static void Axis(', $start)
-$mask=$inputSource.Substring($start,$end-$start).Replace('private static uint','public static uint')
 # Execute actual production code with headless API doubles; no game/VR session.
 $fixture=@'
 namespace UnityEngine {
@@ -35,6 +31,7 @@ namespace QVVR {
  }
  public static class CorrectionTests {
   static int checks;static void Check(bool ok,string message){checks++;if(!ok)throw new System.Exception(message);}
+  static uint Buttons(ulong left,float lt,ulong right,float rt,bool game){return ControllerButtonPolicy.Buttons(ControllerButtonPolicy.Physical(left,lt,right,rt),ControllerButtonPolicy.Defaults(new ControllerBindings{Layout=ControllerLayout.FaceButtons,MovementStick=ControllerStick.Left,DioramaStick=ControllerStick.Right,DioramaTurnSpeed=60,DioramaMoveSpeed=.6f,MenuStick=ControllerStick.Either,Exclusive=true}),game);}
   public static int Run(){
    var anchor=new FixedPanelAnchor();
    anchor.Latch(new UnityEngine.Vector3(float.NaN,0,0),new UnityEngine.Quaternion(0,0,0,1));Check(!anchor.Valid,"Invalid tracking never latches.");
@@ -43,21 +40,21 @@ namespace QVVR {
    Check(anchor.Position.x==1&&anchor.Position.y==2&&anchor.Position.z==3&&anchor.Rotation.y==.5f,"Head movement cannot move a cinematic anchor.");
    anchor.Reset();Check(!anchor.Valid,"Recenter/scene/intro reset releases anchor.");
    anchor.Latch(new UnityEngine.Vector3(7,8,9),new UnityEngine.Quaternion(0,0,0,1));Check(anchor.Position.x==7,"Reset allows new placement.");
-   Check(ControllerButtonPolicy.Buttons(0,0,0,0,true)==0,"Idle gameplay has no buttons.");
-   Check(ControllerButtonPolicy.Buttons(0,1,0,1,true)==192,"Analog triggers emit L+R, never confirm.");
-   Check(ControllerButtonPolicy.Buttons(1UL<<33,0,1UL<<33,0,true)==192,"Digital triggers also emit L+R.");
-   Check(ControllerButtonPolicy.Buttons(0,1,0,0,true)==64,"Left trigger emits L.");
-   Check(ControllerButtonPolicy.Buttons(0,0,0,1,true)==128,"Right trigger emits R.");
-   Check(ControllerButtonPolicy.Buttons(0,1,0,1,false)==16,"Menus/cinema/settings retain right-trigger confirm.");
-   Check(ControllerButtonPolicy.Buttons(0,1,(1UL<<7)|(1UL<<1),1,true)==240,"A/B remain independent of shoulders.");
-   Check(ControllerButtonPolicy.Buttons(1UL<<2,0,1UL<<2,0,true)==0,"Grips never emit shoulders.");
-   Check(ControllerButtonPolicy.Buttons(0,float.NaN,0,float.NaN,true)==0,"Invalid analog state is idle.");
-   Check(ControllerButtonPolicy.Buttons(0,.55f,0,.55f,true)==0,"Exact threshold is idle.");
-   Check(ControllerButtonPolicy.Buttons(0,0,1UL<<7,0,true)==16,"A still confirms/jumps in gameplay.");
-   Check(InputMaskFixture.Mask("L",false)==64&&InputMaskFixture.Mask("R",false)==128,"Actual Rewired L/R names map to shoulders.");
-   Check(InputMaskFixture.Mask("L",true)==0&&InputMaskFixture.Mask("R",true)==0,"Shoulders have no negative axis action.");
-   Check(InputMaskFixture.Mask("Confirm",false)==16&&InputMaskFixture.Mask("Pause",false)==32,"Existing action aliases survive.");
-   Check(InputMaskFixture.Mask("Unknown",false)==0,"Unknown actions preserve original game input.");
+   Check(Buttons(0,0,0,0,true)==0,"Idle gameplay has no buttons.");
+   Check(Buttons(0,1,0,1,true)==ControllerButtonPolicy.Load,"Analog trigger chord emits Load, not Dash/Cam.");
+   Check(Buttons(1UL<<33,0,1UL<<33,0,true)==ControllerButtonPolicy.Load,"Digital trigger chord also emits Load.");
+   Check((Buttons(0,1,0,0,true)&ControllerButtonPolicy.Camera)!=0,"Left trigger emits semantic camera.");
+   Check((Buttons(0,0,0,1,true)&ControllerButtonPolicy.Dash)!=0,"Right trigger emits semantic dash.");
+   Check((Buttons(0,1,0,1,false)&ControllerButtonPolicy.Confirm)==0,"Menu paging no longer also confirms.");
+   Check((Buttons(0,1,(1UL<<7)|(1UL<<1),1,true)&(ControllerButtonPolicy.Primary|ControllerButtonPolicy.Secondary))==768,"A/B remain independent of the trigger chord.");
+   Check(Buttons(1UL<<2,0,1UL<<2,0,true)==0,"Grips never emit gameplay commands.");
+   Check(Buttons(0,float.NaN,0,float.NaN,true)==0,"Invalid analog state is idle.");
+   Check(Buttons(0,.55f,0,.55f,true)==0,"Exact threshold is idle.");
+   Check((Buttons(0,0,1UL<<7,0,true)&ControllerButtonPolicy.Primary)!=0,"A retains gameplay primary.");
+   Check(ControllerButtonPolicy.ActionMask("L",false,true)==64&&ControllerButtonPolicy.ActionMask("R",false,true)==128,"Actual menu L/R names retain page commands.");
+   Check(ControllerButtonPolicy.ActionMask("L",true,true)==0&&ControllerButtonPolicy.ActionMask("R",true,true)==0,"Shoulders have no negative axis action.");
+   Check(ControllerButtonPolicy.ActionMask("Pause",false,false)!=ControllerButtonPolicy.ActionMask("Fire2",false,false),"Pause and secondary action are separate.");
+   Check(ControllerButtonPolicy.ActionMask("Unknown",false,false)==0,"Unknown actions preserve original game input.");
    var camera=new UnityEngine.Camera{clearFlags=UnityEngine.CameraClearFlags.Nothing,cullingMask=123,
     depthTextureMode=UnityEngine.DepthTextureMode.Depth,useOcclusionCulling=true};
    OverlayFixture.RenderPanelOverlay(camera);
@@ -70,7 +67,7 @@ namespace QVVR {
  }
 }
 '@
-Add-Type -TypeDefinition ('using UnityEngine;'+$anchor+$buttons+$fixture+'namespace QVVR { public static class OverlayFixture { const int PanelMask=1<<31;'+$overlay+'} public static class InputMaskFixture { const uint Right=1,Left=2,Up=4,Down=8,Confirm=16,Back=32,LeftShoulder=64,RightShoulder=128;'+$mask+'}}')
+Add-Type -TypeDefinition ('using UnityEngine;'+$anchor+$buttons+$fixture+'namespace QVVR { public static class OverlayFixture { const int PanelMask=1<<31;'+$overlay+'}}')
 $count=[QVVR.CorrectionTests]::Run()
 Add-Type -Path (Join-Path $root '.deps/bepinex-5.4.23.5/BepInEx/core/Mono.Cecil.dll')
 $assembly=[Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $root 'src/QVVR/bin/Release/netstandard2.0/QVVR.dll'))

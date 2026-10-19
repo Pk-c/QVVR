@@ -55,6 +55,7 @@ struct ClipSlot
 {
     qvvr::ClipParameters eye[2];
     qvvr::CapCullVolume cull[2];
+    qvvr::CapSkipFrame skip;
     bool caps[2] = {}, reversed[2] = {}, transparent[2] = {};
 } clipSlots[qvvr::PoseSlotCount] = {};
 std::mutex clipMutex;
@@ -94,14 +95,16 @@ void __stdcall OnRenderEvent(int eventId)
         qvvr::ClipParameters parameters;
         bool caps, reversed, transparent;
         qvvr::CapCullVolume cull;
+        qvvr::CapSkipFrame skip;
         {
             std::lock_guard<std::mutex> lock(clipMutex);
             parameters = clipSlots[slot].eye[eye];
             caps = clipSlots[slot].caps[eye]; reversed = clipSlots[slot].reversed[eye];
             cull = clipSlots[slot].cull[eye];
             transparent = clipSlots[slot].transparent[eye];
+            skip = clipSlots[slot].skip;
         }
-        qvvr::BeginShaderClip(parameters, caps, reversed, transparent, &cull);
+        qvvr::BeginShaderClip(parameters, caps, reversed, transparent, &cull, &skip);
         return;
     }
     // Slot identity travels with the queued Unity command, not a shared
@@ -245,6 +248,8 @@ extern "C"
     }
     __declspec(dllexport) void __cdecl QVVR_SetDetailedGpuTiming(int enabled) { gpuTiming.ConfigureDetailed(enabled != 0); }
     __declspec(dllexport) double __cdecl QVVR_GetGpuPhaseTime(int phase) { return gpuTiming.Phase(static_cast<unsigned>(phase)); }
+    __declspec(dllexport) void __cdecl QVVR_ReadXrPacing(qvvr::FramePacingSnapshot *snapshot)
+    { if (snapshot) *snapshot = qvvr::ReadOpenXrPacing(); }
     __declspec(dllexport) int __cdecl QVVR_InstallShaderClip(void *texture)
     {
         if (!texture)
@@ -295,6 +300,16 @@ extern "C"
     __declspec(dllexport) void __cdecl QVVR_ClearCapMeshes()
     {
         qvvr::ClearCapMeshes();
+    }
+    __declspec(dllexport) void __cdecl QVVR_SetCapSkipMeshes(int slot, const uintptr_t *buffers, int count)
+    {
+        if (slot < 0 || slot >= qvvr::PoseSlotCount) return;
+        std::lock_guard<std::mutex> lock(clipMutex);
+        auto &skip = clipSlots[slot].skip;
+        skip.generation = qvvr::GetCapRegistryGeneration();
+        // Invalid/oversized snapshots disable pruning, never truncate silently.
+        skip.count = buffers && count > 0 && count <= static_cast<int>(qvvr::CapSkipFrame::Capacity) ? static_cast<unsigned>(count) : 0;
+        for (unsigned i = 0; i < skip.count; ++i) skip.buffers[i] = buffers[i];
     }
     __declspec(dllexport) void __cdecl QVVR_GetCapCullStats(unsigned *bounded, unsigned *skipped)
     {

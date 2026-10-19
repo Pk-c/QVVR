@@ -83,18 +83,64 @@ when updating manually. To uninstall, close QV and run the ownership-checked
 
 ## Controls
 
-- Right A: confirm/jump; right B: back.
-- Gameplay index triggers: left = LB (`L`), right = RB (`R`), both = LB+RB.
-  Grips remain reserved for diorama manipulation. Right trigger still confirms
-  in menus, cinematic panels and VR settings.
-- Thumbsticks: menu navigation; character movement is viewer-relative.
-- Both thumbstick clicks: open/close the QVVR settings panel.
+Controller bindings live in `[Input]` in `BepInEx/config/dev.qvvr.prototype.cfg`.
+They name logical button roles rather than a headset. Default `Layout=FaceButtons`
+targets the existing Frame/Touch-style normalized layout. Use `TrackpadWands`
+for OpenVR controllers without face buttons. Other PCVR devices still depend on
+their SteamVR legacy compatibility mapping; these presets are not a new runtime
+backend or a claim of hardware validation on every headset.
+
+| Action | FaceButtons default | TrackpadWands default |
+| --- | --- | --- |
+| Primary game action | Right primary (A) | Right trigger |
+| Secondary game action / menu back | Right secondary (B) | Right application-menu button |
+| Pause | Left secondary (Y; Frame left D-pad up in XR) | Left application-menu button |
+| Character swap | Left primary (X; Frame left D-pad down in XR) | Left trackpad click |
+| Dash (hold) | Right trigger | Left trigger |
+| Game camera mode (hold) | Left trigger | Unbound; diorama gestures still work |
+| Load (original LB+RB action) | Both triggers | Both triggers |
+| Menu/dialog/VR settings confirm | Right primary (A) | Right trigger |
+| Menu previous/next page | Left/right trigger | Unbound; configurable |
+| QVVR settings | Both stick clicks | Right trackpad click |
+
+- Left stick/pad: viewer-relative character movement. Right stick/pad: left/right
+  rotates the diorama about its center; forward brings it closer, backward moves
+  it away, at constant height and size. `MovementStick`, `DioramaStick`, `MenuStick`
+  select `Left`, `Right`, `Either` or `None`; menus default to either stick/pad.
+  Game secondary camera axes are disabled in focused VR. The old `CameraStick`
+  setting is no longer used. Do not assign locomotion and diorama to the same stick
+  unless simultaneous movement is intended.
+- `DioramaStickTurnDegreesPerSecond=60` and
+  `DioramaStickMoveMetersPerSecond=0.6` set full-deflection speeds. Placement uses
+  physical meters, preserves tilt, and is saved after release. UI navigation,
+  pause, VR settings, cinematics and two-grip gestures block stick placement.
+- Every button action accepts `Default` (preset), `None`, `LeftPrimary`,
+  `LeftSecondary`, `RightPrimary`, `RightSecondary`, `LeftTrigger`, `RightTrigger`,
+  `LeftStickClick`, `RightStickClick`, `BothTriggers`, `BothStickClicks` or
+  `BothSecondaryButtons`. Grips and system buttons cannot be assigned.
+- `PrimaryAction`, `SecondaryAction`, `Pause`, `Swap`, `Dash`, `Camera`, `Load`,
+  `MenuConfirm`, `MenuBack`, `PreviousPage`, `NextPage`, `VrSettings` are independent.
+  For example, `PrimaryAction=RightTrigger` and `Dash=None` moves the primary action
+  onto the trigger; also set `NextPage=None` if using it for menu confirmation.
+- Pause/dialog queries use menu bindings even inside a VR gameplay scene. B no
+  longer also emits Pause. Menu trigger paging does not also confirm by default.
+- While Load is held its constituent controls cannot also dash, activate camera
+  mode or perform the primary action. A constituent pressed earlier can still
+  perform its ordinary action before the full chord is held. Custom overlapping
+  bindings are possible; avoid assigning the same single button to several game
+  actions. Settings, gestures and focus-return input suppression are preserved.
+- `ExclusiveVrControls=true` avoids adding Steam Input's mirrored gamepad actions
+  while focused VR controllers are available. Set false to restore mixed
+  keyboard/gamepad input. Unknown actions and no-controller/desktop fallback are
+  retained. Edit the file with QV closed; existing user configuration is preserved
+  on deployment and missing keys receive defaults on manual launch.
 - Both grips: move hands together to translate, spread/close to resize,
   and rotate the shared hand/wrist pose to rotate the diorama.
 - Release either grip to retain placement. Right grip alone has no placement action.
 - F7: recenter; F8: toggle VR/desktop rendering.
 
-The settings menu uses up/down to select and left/right to adjust. Closing saves
+The settings menu uses up/down to select and left/right to adjust. Binding edits
+are currently file-based, not an in-headset rebinding screen. Closing saves
 settings. The game simulation is not paused while this menu is open.
 
 Two-hand translation defaults to **1.15x**, rotation to **1.10x**; head tracking

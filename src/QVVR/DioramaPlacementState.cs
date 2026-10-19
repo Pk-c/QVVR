@@ -65,6 +65,29 @@ namespace QVVR
         }
 
         internal void SetScale(float scale) { Scale = DioramaScaleState.Clamp(scale); Dirty = true; }
+        internal void MoveStick(Vector2 stick, Vector3 head, float deltaTime, float turnSpeed, float moveSpeed)
+        {
+            if (!Valid || Active || !SpatialMath.Finite(head) || !SpatialMath.Finite(stick.x) ||
+                !SpatialMath.Finite(stick.y) || !SpatialMath.Finite(deltaTime) || deltaTime <= 0f) return;
+            // Limit the displacement after stalls. Physical meters and world-up
+            // yaw are independent of game scale, HMD tilt and game camera yaw.
+            float dt = Mathf.Clamp(deltaTime, 0f, 0.05f);
+            float yaw = Mathf.Clamp(stick.x, -1f, 1f) * dt *
+                (SpatialMath.Finite(turnSpeed) ? Mathf.Clamp(turnSpeed, 0f, 180f) : 60f);
+            float move = Mathf.Clamp(stick.y, -1f, 1f) * dt *
+                (SpatialMath.Finite(moveSpeed) ? Mathf.Clamp(moveSpeed, 0f, 3f) : 0.6f);
+            if (yaw == 0f && move == 0f) return;
+            if (yaw != 0f) Rotation = Quaternion.AngleAxis(yaw, Vector3.up) * Rotation;
+            Vector3 direction = Position - head;
+            direction.y = 0f;
+            float distance = direction.magnitude;
+            if (move != 0f && distance > 0.0001f)
+                // A previous two-hand grab can be outside the stick's limits.
+                // Allow a gradual return, never snap it back onto a limit.
+                Position += direction / distance * (Mathf.Clamp(distance - move,
+                    distance < 0.25f ? distance : 0.25f, distance > 10f ? distance : 10f) - distance);
+            Dirty = true;
+        }
         internal void Tilt(float delta) { Rotation = Rotation * Quaternion.AngleAxis(-delta, Vector3.right); Dirty = true; }
         internal void Stop() { Active = false; }
         internal void Saved() { Dirty = false; }

@@ -1,19 +1,32 @@
 [CmdletBinding()]
-param()
+param([string]$GameDir)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-$sources=@('DioramaVisibility.cs','UiCaptureCache.cs','LiquidDepthPolicy.cs','CutSurfaceRegistry.cs') | ForEach-Object {
+$sources=@('DioramaVisibility.cs','UiCaptureCache.cs','UiMaterialWatch.cs','LiquidDepthPolicy.cs','CutSurfaceRegistry.cs') | ForEach-Object {
  (Get-Content (Join-Path $root "src/QVVR/$_") -Raw) -replace '(?m)^using .*;\r?\n',''
 }
 $fixture=Get-Content (Join-Path $PSScriptRoot 'performance-fixture.cs') -Raw
 $tests=@'
 namespace QVVR {
+ internal static class TmpFixture {
+  static readonly System.Reflection.Emit.ModuleBuilder Module=System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("Unity.TextMeshPro"),System.Reflection.Emit.AssemblyBuilderAccess.Run).DefineDynamicModule("Fixture");
+  static readonly Type Text=Build("TMPro.TextMeshProUGUI","fontSharedMaterial"), Sub=Build("TMPro.TMP_SubMeshUI","sharedMaterial");
+  static Type Build(string name,string property){
+   var t=Module.DefineType(name,TypeAttributes.Public,typeof(UnityEngine.UI.UninitializedSubMesh));
+   var getter=t.DefineMethod("get_"+property,MethodAttributes.Public|MethodAttributes.SpecialName|MethodAttributes.HideBySig,typeof(Material),Type.EmptyTypes);
+   var il=getter.GetILGenerator();il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);il.Emit(System.Reflection.Emit.OpCodes.Ldfld,typeof(UnityEngine.UI.UninitializedSubMesh).GetField("Shared"));il.Emit(System.Reflection.Emit.OpCodes.Ret);
+   t.DefineProperty(property,PropertyAttributes.None,typeof(Material),Type.EmptyTypes).SetGetMethod(getter);return t.CreateTypeInfo().AsType();
+  }
+  internal static UnityEngine.UI.UninitializedSubMesh Create(bool sub,Material shared){var g=(UnityEngine.UI.UninitializedSubMesh)Activator.CreateInstance(sub?Sub:Text);g.Shared=shared;return g;}
+ }
  internal static class NativeBridge {
   internal struct CapMeshBounds{internal Vector3 Minimum,Maximum;}
   internal static bool ShaderClipReady=true;internal static bool Bounded;internal static CapMeshBounds LastBounds;internal static int Registrations;
   internal static void QVVR_ClearCapMeshes(){Registrations=0;}
   internal static void QVVR_RegisterCapMesh(System.IntPtr buffer){Registrations++;Bounded=false;}
   internal static void QVVR_RegisterCapMeshBounds(System.IntPtr buffer,ref CapMeshBounds b){Registrations++;Bounded=true;LastBounds=b;}
+  internal static int Skipped;internal static System.IntPtr FirstSkipped;
+  internal static void QVVR_SetCapSkipMeshes(int slot,System.IntPtr pointer,int count){Skipped=count;FirstSkipped=count>0?System.Runtime.InteropServices.Marshal.ReadIntPtr(pointer):System.IntPtr.Zero;}
  }
  public static class PerformanceTests {
   static int count;static void Check(bool ok,string name){count++;if(!ok)throw new System.Exception(name);}
@@ -50,6 +63,19 @@ namespace QVVR {
    var mixed=new MeshRenderer{bounds=Box(100,0,0),Filter=new MeshFilter{sharedMesh=batchA.Filter.sharedMesh},sharedMaterials=new[]{new Material{renderQueue=3000,shader=new Shader{name="Transparent"}}}};
    Resources.Snapshot=new Renderer[]{batchA,batchB,mixed};caps.Refresh();
    Check(NativeBridge.Registrations==1&&!NativeBridge.Bounded,"Moving/mixed-material contributor disables shared-buffer pruning");caps.Clear();
+   batchA.isPartOfStaticBatch=false;batchB.isPartOfStaticBatch=false;
+   batchA.bounds=Box(0,0,0);batchB.bounds=Box(0,0,0);Resources.Snapshot=new Renderer[]{batchA,batchB};caps.Refresh();
+   caps.PrepareFrame(0,new Vector3(),2,2);Check(NativeBridge.Skipped==1&&NativeBridge.FirstSkipped==new System.IntPtr(42),"Live ordinary shared meshes wholly inside cylinder skip caps");
+   batchB.bounds=Box(2,0,0);caps.PrepareFrame(1,new Vector3(),2,2);Check(NativeBridge.Skipped==0,"Moving one shared contributor onto boundary restores full caps");
+   batchB.bounds=Box(float.NaN,0,0);caps.PrepareFrame(2,new Vector3(),2,2);Check(NativeBridge.Skipped==0,"Invalid live contributor fails open for entire shared buffer");
+   batchB.bounds=Box(0,0,0,100);caps.PrepareFrame(3,new Vector3(),2,2);Check(NativeBridge.Skipped==0,"Cylinder-enclosing terrain retains caps");
+   batchA.bounds=Box(10,0,0);batchB.bounds=Box(10,0,0);caps.PrepareFrame(4,new Vector3(),2,2);Check(NativeBridge.Skipped==1,"Wholly exterior buffer needs no boundary stencil");
+   caps.PrepareFrame(5,new Vector3(float.NaN,0,0),2,2);Check(NativeBridge.Skipped==0,"Invalid cylinder keeps full replay");
+   batchB.Filter.sharedMesh=new Mesh{Buffer=new System.IntPtr(99)};caps.PrepareFrame(6,new Vector3(),2,2);
+   Check(caps.NeedsRefresh&&NativeBridge.Skipped==0,"Mesh replacement clears all skips until cold registry refresh");
+   caps.PrepareFrame(7,new Vector3(),2,2);Check(NativeBridge.Skipped==0,"Pending topology discovery keeps replay enabled");
+   caps.Refresh();caps.PrepareFrame(8,new Vector3(),2,2);Check(!caps.NeedsRefresh&&NativeBridge.Skipped==2,"Cold discovery recovers correct buffer groups after replacement");
+   caps.Clear();caps.PrepareFrame(0,new Vector3(),2,2);Check(NativeBridge.Skipped==0&&caps.LastSkipped==0,"Clear unpins staging and clears future frame snapshot");
    var liquid=new Renderer{bounds=Box(0,0,0),sharedMaterials=new[]{new Material{shader=new Shader{name="Toony Colors Pro 2/Examples/Cat Demo/Water"}}}};
    Resources.Snapshot=new[]{liquid};var depth=new LiquidDepthPolicy();depth.Refresh();var camera=new Camera();
    Check(depth.Visible(camera,true,new Vector3(),2,2),"Visible liquid requests depth");
@@ -72,15 +98,32 @@ namespace QVVR {
    group.ignoreParentGroups=true;Check(cache.NeedsCapture(),"CanvasGroup inheritance switch");cache.Captured();
    parent.ParentGroup.alpha=.5f;Check(cache.NeedsCapture(),"Parent group outside canvas hierarchy");cache.Captured();
    Check(!cache.NeedsCapture(),"Settled UI becomes reusable again");cache.Clear();Check(graphic.Listeners==0,"Unsubscribe on cleanup");
+   cache.BeginScan();cache.Watch(canvas);cache.Captured();graphic.canvasRenderer.Color=new Color{a=.5f};
+   Check(cache.NeedsCapture(),"CanvasRenderer alpha tween without graphic dirtiness");cache.Captured();Check(!cache.NeedsCapture(),"Settled color tween is reusable");
    var animator=new Animator();canvas.Children=new object[]{graphic,animator};cache.BeginScan();cache.Watch(canvas);cache.Captured();
    Check(cache.NeedsCapture(),"Animation retains configured cadence");animator.enabled=false;cache.Captured();Check(!cache.NeedsCapture(),"Disabled animation does not force capture");
-   graphic.material=new Material();cache.BeginScan();cache.Watch(canvas);cache.Captured();Check(cache.NeedsCapture(),"Custom material animation conservative fallback");
+   graphic.enabled=true;graphic.material=new Material();cache.BeginScan();cache.Watch(canvas);cache.Captured();Check(cache.NeedsCapture(),"Custom material animation conservative fallback");
    cache.BeginScan();cache.Watch(canvas);Check(graphic.Listeners==3,"Repeated cache refresh never duplicates callbacks");cache.Clear();
    var subMesh=new UnityEngine.UI.UninitializedSubMesh{enabled=false};canvas.Children=new object[]{subMesh};
    cache.BeginScan();cache.Watch(canvas);cache.Captured();
-   Check(subMesh.MaterialReads==0&&cache.NeedsCapture(),"Uninitialized/inactive TMP-like virtual material getters never touched");
+   Check(subMesh.MaterialReads==0&&!cache.NeedsCapture(),"Disabled unknown graphics do not poison the HUD or touch virtual getters");
    subMesh.enabled=true;cache.BeginScan();cache.Watch(canvas);cache.Captured();
    Check(subMesh.MaterialReads==0&&cache.NeedsCapture(),"Active unknown graphics also retain normal cadence without cloning material");
+   subMesh.gameObject.activeInHierarchy=false;cache.Captured();Check(!cache.NeedsCapture(),"Inactive custom submesh does not force continuous capture");
+   var sdf=new Material{shader=new Shader{name="TextMeshPro/Mobile/Distance Field"}};
+   var text=TmpFixture.Create(false,sdf);var tmpSub=TmpFixture.Create(true,sdf);canvas.Children=new object[]{text,tmpSub};
+   cache.BeginScan();cache.Watch(canvas);cache.Captured();Check(!cache.NeedsCapture()&&text.MaterialReads==0&&tmpSub.MaterialReads==0,"Known TMP SDF and submesh reuse safely through shared getters");
+   var observerMap=(Dictionary<UnityEngine.UI.Graphic,UiMaterialWatch>)typeof(UiCaptureCache).GetField("cachedMaterialWatches",BindingFlags.NonPublic|BindingFlags.Instance).GetValue(cache);
+   var observer=observerMap[text];cache.BeginScan();cache.Watch(canvas);cache.Captured();
+   Check(object.ReferenceEquals(observer,observerMap[text])&&!cache.NeedsCapture(),"Regular maintenance retains cold-bound shared getter delegates");
+   text.Dirty(0);Check(cache.NeedsCapture(),"TMP text edits invalidate capture");cache.Captured();
+   text.Shared=new Material{shader=sdf.shader};Check(cache.NeedsCapture(),"TMP shared material replacement cannot freeze UI");text.Shared=sdf;
+   sdf.shader=new Shader{name="Custom/AnimatedText"};Check(cache.NeedsCapture(),"In-place shader replacement fails open");
+   sdf.shader=new Shader{name="TextMeshPro/Distance Field"};cache.BeginScan();cache.Watch(canvas);cache.Captured();Check(!cache.NeedsCapture(),"Non-scrolling full SDF is reusable");
+   sdf.Floats[Shader.PropertyToID("_FaceUVSpeedX")]=1;Check(cache.NeedsCapture(),"Time-driven face texture scrolling retains capture rate");
+   sdf.Floats.Clear();sdf.Floats[Shader.PropertyToID("_OutlineUVSpeedY")]=1;Check(cache.NeedsCapture(),"Time-driven outline texture scrolling retains capture rate");
+   var uninitialized=TmpFixture.Create(true,null);canvas.Children=new object[]{uninitialized};cache.BeginScan();cache.Watch(canvas);cache.Captured();
+   Check(cache.NeedsCapture()&&uninitialized.MaterialReads==0,"Null TMP shared material safely retains cadence without cloning");
    cache.DisableReuse();Check(cache.Failed&&cache.NeedsCapture()&&subMesh.Listeners==0,"Failed cache releases listeners and fails open");
    cache.BeginScan();cache.Watch(canvas);cache.Captured();
    Check(cache.Failed&&cache.NeedsCapture()&&subMesh.MaterialReads==0&&subMesh.Listeners==0,"Circuit breaker survives scene/maintenance scans");
@@ -89,7 +132,7 @@ namespace QVVR {
  }
 }
 '@
-Add-Type -TypeDefinition ("using System;using System.Collections.Generic;using UnityEngine;using UnityEngine.Events;using UnityEngine.UI;`n"+$fixture+($sources -join "`n")+$tests)
+Add-Type -TypeDefinition ("using System;using System.Reflection;using System.Runtime.InteropServices;using System.Collections.Generic;using UnityEngine;using UnityEngine.Events;using UnityEngine.UI;`n"+$fixture+($sources -join "`n")+$tests)
 $count=[QVVR.PerformanceTests]::Run()
 Add-Type -Path (Join-Path $root '.deps/bepinex-5.4.23.5/BepInEx/core/Mono.Cecil.dll')
 $assembly=[Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $root 'src/QVVR/bin/Release/netstandard2.0/QVVR.dll'))
@@ -114,5 +157,28 @@ try {
  $disable=$redirect.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'DisableReuse'}
  if(!$disable -or !($redirect.ExceptionHandlers | Where-Object {$_.HandlerType -eq 'Catch' -and $disable.Offset -ge $_.HandlerStart.Offset -and $disable.Offset -lt $_.HandlerEnd.Offset})){throw 'Optional UI cache errors must not kill scene maintenance.'}
  if(($ui.Methods | Where-Object Name -eq 'NeedsCapture').Body.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'set_hasChanged'}){throw 'Never consume game-owned transform flags.'}
+ $prepareCaps=$late.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.DeclaringType.Name -eq 'CutSurfaceRegistry' -and $_.Operand.Name -eq 'PrepareFrame'}
+ $stereo=$late.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'RenderStereoGameplay'}
+ if(!$prepareCaps -or $prepareCaps.Offset -ge $stereo[0].Offset){throw 'Live cap snapshot must precede both manual eyes.'}
+ $maintenance=$renderer.NestedTypes | Where-Object Name -like '<CanvasMaintenance>*'
+ $move=($maintenance.Methods | Where-Object Name -eq 'MoveNext').Body.Instructions
+ $endFrame=$move | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.DeclaringType.Name -eq 'WaitForEndOfFrame'}
+ $scan=$move | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'RedirectOverlayCanvases'}
+ if(!$endFrame -or $endFrame.Count -ne 1 -or !$scan -or $endFrame.Offset -ge $scan.Offset){throw 'Maintenance must reuse a cached end-of-frame yield before cold scans.'}
 } finally {$assembly.Dispose()}
+if($GameDir){
+ $tmp=[Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $GameDir 'QV_Data/Managed/Unity.TextMeshPro.dll'))
+ try {
+  if($tmp.Name.Name -ne 'Unity.TextMeshPro'){throw 'Unexpected installed TMP assembly identity.'}
+  foreach($pair in @(@('TMP_Text','get_fontSharedMaterial'),@('TMP_SubMeshUI','get_sharedMaterial'))){
+   $type=$tmp.MainModule.Types | Where-Object Name -eq $pair[0]
+   $method=$type.Methods | Where-Object Name -eq $pair[1]
+   $il=@($method.Body.Instructions)
+   if($il.Count -ne 3 -or $il[0].OpCode.Name -ne 'ldarg.0' -or $il[1].OpCode.Name -ne 'ldfld' -or $il[2].OpCode.Name -ne 'ret' -or $il[1].Operand.FieldType.FullName -ne 'UnityEngine.Material'){
+    throw "Installed TMP shared getter is no longer a direct non-cloning field read: $($pair[1])"
+   }
+  }
+ }finally{$tmp.Dispose()}
+ Write-Host 'Installed TMP shared getters verified by read-only metadata: direct Material field reads, no instantiation or calls.'
+}
 Write-Host "Performance policies: $count assertions plus compiled HUD/visibility/depth/lifecycle integration passed. API doubles, not a Frame benchmark."
