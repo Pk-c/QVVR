@@ -34,12 +34,16 @@ namespace UnityEngine {
  public struct Scene {public bool Valid,isLoaded;public bool IsValid(){return Valid;}}
  public class GameObject {public Scene scene=new Scene{Valid=true,isLoaded=true};public bool activeInHierarchy=true;public int layer;}
  public struct Color {
-  public float a;public static bool operator==(Color a,Color b){return a.a==b.a;}public static bool operator!=(Color a,Color b){return !(a==b);}
+  public float r,g,b,a;public static bool operator==(Color a,Color b){return a.a==b.a&&a.r==b.r&&a.g==b.g&&a.b==b.b;}public static bool operator!=(Color a,Color b){return !(a==b);}
   public override bool Equals(object o){return o is Color&&(Color)o==this;}public override int GetHashCode(){return a.GetHashCode();}
  }
  public class Shader {public string name;public static int PropertyToID(string name){return name.GetHashCode();}}
  public class Material {
-  public Shader shader;public int renderQueue=2000;public System.Collections.Generic.Dictionary<int,float> Floats=new System.Collections.Generic.Dictionary<int,float>();
+  public string name;public Shader shader;public int renderQueue=2000;public System.Collections.Generic.Dictionary<int,float> Floats=new System.Collections.Generic.Dictionary<int,float>();
+  public System.Collections.Generic.Dictionary<int,Color> Colors=new System.Collections.Generic.Dictionary<int,Color>();public bool FailColor;
+  public bool HasProperty(int id){return Colors.ContainsKey(id)||Floats.ContainsKey(id);}
+  public Color GetColor(int id){Color c;return Colors.TryGetValue(id,out c)?c:new Color();}
+  public void SetColor(int id,Color color){Colors[id]=color;if(FailColor&&color.a==0){FailColor=false;throw new System.InvalidOperationException();}}
   public float GetFloat(int id){float v;return Floats.TryGetValue(id,out v)?v:0;}
  }
  public class Renderer {public GameObject gameObject=new GameObject();public Material[] sharedMaterials=new Material[0];public bool enabled=true;public Bounds bounds;}
@@ -70,10 +74,10 @@ namespace UnityEngine.UI {
   public UnityEngine.GameObject gameObject=new UnityEngine.GameObject();public CanvasRenderer canvasRenderer=new CanvasRenderer();
   public bool enabled=true;public virtual UnityEngine.Material material{get;set;}public virtual UnityEngine.Material defaultMaterial{get;set;}
   UnityEngine.Events.UnityAction vertices,materials,layout;
-  public int Listeners;
-  public void RegisterDirtyVerticesCallback(UnityEngine.Events.UnityAction a){vertices+=a;Listeners++;}
-  public void RegisterDirtyMaterialCallback(UnityEngine.Events.UnityAction a){materials+=a;Listeners++;}
-  public void RegisterDirtyLayoutCallback(UnityEngine.Events.UnityAction a){layout+=a;Listeners++;}
+  public int Listeners, Registrations;
+  public void RegisterDirtyVerticesCallback(UnityEngine.Events.UnityAction a){vertices+=a;Listeners++;Registrations++;}
+  public void RegisterDirtyMaterialCallback(UnityEngine.Events.UnityAction a){materials+=a;Listeners++;Registrations++;}
+  public void RegisterDirtyLayoutCallback(UnityEngine.Events.UnityAction a){layout+=a;Listeners++;Registrations++;}
   public void UnregisterDirtyVerticesCallback(UnityEngine.Events.UnityAction a){vertices-=a;Listeners--;}
   public void UnregisterDirtyMaterialCallback(UnityEngine.Events.UnityAction a){materials-=a;Listeners--;}
   public void UnregisterDirtyLayoutCallback(UnityEngine.Events.UnityAction a){layout-=a;Listeners--;}

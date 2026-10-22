@@ -1,8 +1,8 @@
 [CmdletBinding()]
-param([string]$GameDir)
+param([string]$GameDir,[ValidateSet('OpenXR','OpenVR')][string]$Backend='OpenXR')
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-$files=@('ControllerButtonPolicy.cs','ControllerInputConfiguration.cs','OpenVrInputBridge.cs','GripGestureState.cs','ComfortMath.cs')
+$files=@('ControllerButtonPolicy.cs','ControllerInputConfiguration.cs','OpenVrInputBridge.cs','GripGestureState.cs','ComfortMath.cs','DioramaStickFilter.cs')
 $sources=$files | ForEach-Object {(Get-Content (Join-Path $root "src/QVVR/$_") -Raw) -replace '(?m)^using .*;\r?\n',''}
 # Production bridge/config/policy, fake APIs only. No game, SteamVR or XR session.
 $fixture=@'
@@ -41,7 +41,8 @@ namespace Valve.VR {
  }
 }
 namespace HarmonyLib {
- public class Harmony {public Harmony(string id){} public void Patch(MethodInfo m,HarmonyMethod prefix=null,HarmonyMethod postfix=null,HarmonyMethod finalizer=null){}public void UnpatchSelf(){}}
+ public class CodeInstruction {public OpCode opcode;public object operand;public CodeInstruction(OpCode opcode,object operand=null){this.opcode=opcode;this.operand=operand;}}
+ public class Harmony {public Harmony(string id){} public void Patch(MethodInfo m,HarmonyMethod prefix=null,HarmonyMethod postfix=null,HarmonyMethod finalizer=null,HarmonyMethod transpiler=null){}public void UnpatchSelf(){}}
  public class HarmonyMethod {public HarmonyMethod(Type t,string name){}}
  public static class AccessTools {
   public static Type TypeByName(string name){return null;}
@@ -61,16 +62,20 @@ namespace QVVR {
   internal void HandleInput(float x,float y,bool confirm,bool back){X=x;Y=y;Confirm=confirm;Back=back;if(back)Visible=false;}
  }
  internal class OpenVrRenderer {
-  internal bool UsesOpenXr=true,HasInputFocus=true,CanGrabWorld=true,UseGameShoulders=true;
+  internal bool UsesOpenXr=ControllerInputTests.TestOpenXr,HasInputFocus=true,CanGrabWorld=true,UseGameShoulders=true;
   internal VRControllerState_t Left,Right;internal bool HasLeft=true,HasRight=true;internal bool Rotate=false;
-  internal bool PrepareTracking(){return true;}
+  internal bool PrepareTracking(){if(!UsesOpenXr)throw new Exception("XR preparation called on the OpenVR path");return true;}
   internal bool GetXrControllerState(bool left,ref VRControllerState_t state){bool has=left?HasLeft:HasRight;if(has)state=left?Left:Right;return has;}
   internal bool IsControllerTracked(uint id){return id==1?HasLeft:HasRight;}
   internal Vector2 MapPlayerMovement(Vector2 v,bool yaw){return Rotate?new Vector2(-v.y,v.x):v;}
  }
  public static class ControllerInputTests {
+  public struct Obscured {public bool Value;public static implicit operator bool(Obscured v){return v.Value;}}
+  public class ObscuredDialog {public Obscured IsOpen{get;set;}public void Update(){}}
+  public class BoolDialog {public bool IsOpen{get;set;}public void Update(){}}
   static int checks;static void Check(bool ok,string message){checks++;if(!ok)throw new Exception(message);}
   static readonly BindingFlags Flags=BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Instance|BindingFlags.Static;
+  internal static bool TestOpenXr;
   static OpenVrInputBridge bridge;static Plugin plugin;static OpenVrRenderer renderer;static VrSettingsMenu menu;static CVRSystem system;
   delegate void AddCall(string action,bool negative,int edge,ref bool result);delegate void AxisCall(string action,ref float result);
   delegate void AnyCall(int edge,ref bool result);
@@ -84,10 +89,11 @@ namespace QVVR {
   static void Step(ulong left=0,ulong right=0,float lt=0,float rt=0,float lx=0,float ly=0,float rx=0,float ry=0){
    renderer.Left=new VRControllerState_t{ulButtonPressed=left,rAxis1=new Valve.VR.Axis{x=lt},rAxis0=new Valve.VR.Axis{x=lx,y=ly}};
    renderer.Right=new VRControllerState_t{ulButtonPressed=right,rAxis1=new Valve.VR.Axis{x=rt},rAxis0=new Valve.VR.Axis{x=rx,y=ry}};
-   system.Left=renderer.Left;system.Right=renderer.Right;Time.frameCount++;update();
+   system.Left=renderer.Left;system.Right=renderer.Right;system.HasLeft=renderer.HasLeft;system.HasRight=renderer.HasRight;Time.frameCount++;update();
   }
   static uint Word(ControllerBindings b,ulong l=0,ulong r=0,float lt=0,float rt=0,bool gameplay=true){return ControllerButtonPolicy.Buttons(ControllerButtonPolicy.Physical(l,lt,r,rt),b,gameplay);}
-  public static int Run(){
+  public static int Run(bool xr){
+   TestOpenXr=xr;
    const ulong primary=1UL<<7,secondary=1UL<<1,click=1UL<<32,grip=1UL<<2;
    var face=ControllerButtonPolicy.Defaults(new ControllerBindings());
    Check(Word(face)==0,"Idle policy");Check((Word(face,r:secondary)&ControllerButtonPolicy.Secondary)!=0&&(Word(face,r:secondary)&ControllerButtonPolicy.Pause)==0,"B does not pause");
@@ -105,6 +111,13 @@ namespace QVVR {
    Check((Word(wand,l:click)&ControllerButtonPolicy.Swap)!=0,"Wand left pad swaps");
    Check(ControllerButtonPolicy.Pressed(ControllerButtonPolicy.Physical(0,0,click,0),wand.VrMenu),"Wand right pad opens VR settings without a conflicting chord");
    Check(wand.Camera==ControllerBinding.None,"Limited-button preset leaves optional game camera unbound");
+   var filter=new DioramaStickFilter();Check(filter.Update(.35f,.39f,.4f).sqrMagnitude==0,"Placement has a strong neutral dead zone");
+   var filtered=filter.Update(.8f,.65f,.4f);Check(filtered.x>0&&filtered.y==0,"Turning does not also approach for a diagonal thumb movement");
+   filtered=filter.Update(.69f,.7f,.4f);Check(filtered.x>0&&filtered.y==0,"Dominant axis uses hysteresis, not diagonal chatter");
+   filtered=filter.Update(.2f,.9f,.4f);Check(filtered.x==0&&filtered.y>0,"Deliberate vertical movement switches to approach");
+   filter.Update(0,0,.4f);filtered=filter.Update(0,-1,.4f);Check(filtered.x==0&&filtered.y==-1,"Full backward output and neutral reset preserved");
+   Check(filter.Update(float.NaN,float.PositiveInfinity,.4f).sqrMagnitude==0,"Invalid placement axes remain neutral");
+   filter.Reset();filtered=filter.Update(.401f,0,.4f);Check(filtered.x>0&&filtered.x<.01f,"Placement ramps gently just outside dead zone");
    plugin=new Plugin();renderer=new OpenVrRenderer();menu=new VrSettingsMenu();system=new CVRSystem();bridge=new OpenVrInputBridge();
    Set("plugin",plugin);Set("renderer",renderer);Set("settingsMenu",menu);Set("system",system);Set("active",bridge);
    update=(Action)Delegate.CreateDelegate(typeof(Action),bridge,typeof(OpenVrInputBridge).GetMethod("Update",Flags));
@@ -118,19 +131,33 @@ namespace QVVR {
    Step();Step(rt:1);Check(Button("Dash")&&!Button("R",original:true),"Semantic dash suppresses native R duplication");
    Step(lt:1,rt:1);Check(Button("Load")&&!Button("Dash")&&!Button("Cam")&&Button("Dash",2),"Load takes trigger ownership and releases dash");
    Step();Step(rx:.8f,ry:.7f);Check(Axis("Horizontal",.9f)==0&&Axis("Horizontal2",.9f)==0&&Axis("Vertical2",.8f)==0,"Diorama stick cannot drive game camera, walk or mirrored secondary axes");
-   Check(bridge.DioramaStick.x==.8f&&bridge.DioramaStick.y==.7f,"Right stick exposes independent yaw/approach axes to LateUpdate");
+   Check(bridge.DioramaStick.x>0&&bridge.DioramaStick.y==0,"Right stick turns without accidental approach through the real bridge");
    int ui=Ui();Check(Axis("Horizontal")==.8f&&Button("Right"),"UI uses separate both-stick navigation");int nested=Ui();EndUi(nested);Check(Axis("Horizontal")==.8f,"Nested UI scope restore");EndUi(ui);Check(Axis("Horizontal")==0,"Finalizer restores gameplay navigation");
    Check(bridge.DioramaStick.sqrMagnitude==0,"A UI navigation query reserves placement for the rest of this frame");
-   Step(rx:.8f);Check(bridge.DioramaStick.x==.8f,"Menu navigation reservation expires on the next frame");
+   Step(rx:.8f);Check(bridge.DioramaStick.x>0,"Menu navigation reservation expires on the next frame");
    Time.timeScale=0;Check(bridge.DioramaStick.sqrMagnitude==0,"Game pause freezes stick placement");Time.timeScale=1;
    Step(left:grip,right:grip,rx:.8f);Check(bridge.DioramaStick.sqrMagnitude==0,"Two-hand placement owns the diorama over stick input");Step();
    plugin.File.Get<ControllerStick>("DioramaStick").Value=ControllerStick.None;Step();Step(rx:.8f);Check(bridge.DioramaStick.sqrMagnitude==0,"Diorama stick can be disabled");Step();
-   plugin.File.Get<ControllerStick>("DioramaStick").Value=ControllerStick.Left;Step();Step(lx:.7f);Check(bridge.DioramaStick.x==.7f,"Portable placement stick can be reassigned");Step();
+   plugin.File.Get<ControllerStick>("DioramaStick").Value=ControllerStick.Left;Step();Step(lx:.7f);Check(bridge.DioramaStick.x>0,"Portable placement stick can be reassigned");Step();
    plugin.File.Get<ControllerStick>("DioramaStick").Value=ControllerStick.Right;Step();
    Step();renderer.Rotate=true;Step(lx:.8f);object[] movementState={null};Invoke("BeginMovementQuery",movementState);
    Check(Axis("Horizontal")==0&&Axis("Vertical")==.8f&&Button("Up",1)&&!Button("Right"),"Viewer-relative movement axes and button edges survive separate stick routing");
    ui=Ui();Check(Axis("Horizontal")==.8f&&Button("Right"),"UI navigation remains unrotated inside a nested movement scope");EndUi(ui);
    Invoke("EndMovementQuery",movementState[0]);renderer.Rotate=false;Step();
+   Step(lx:.8f,right:primary);object[] dialogState={null};Invoke("BeginDialogQuery",dialogState);Invoke("DialogOpen",false);
+   Check(!Button("Fire1",1)&&!Button("Confirm",1),"A closed dialogue poll cannot consume A");Invoke("EndDialogQuery",dialogState[0]);
+   Check(Button("Fire1",1)&&Axis("Horizontal")==.8f,"Closed dialogue polling cannot steal gameplay A or latch walking");
+   Step(lx:.8f);Step(lx:.8f,right:primary);dialogState=new object[]{null};Invoke("BeginDialogQuery",dialogState);Invoke("DialogOpen",true);
+   Check(Button("Fire1",1),"Open dialogue still consumes menu confirmation");Invoke("EndDialogQuery",dialogState[0]);
+   Check(Axis("Horizontal")==0,"Held dialogue confirm cannot leak into gameplay");Step(lx:.8f);
+   Check(Axis("Horizontal")==.8f,"After confirm release walking resumes without recentering the stick");Step();
+   Step(rt:1);Check(Button("Dash"),"Natural held action delivered");Step();Step();Step();
+   Check(Button("Dash",2)&&Button("Dash",2),"Natural release survives a skipped consumer frame and is shared by all consumers");Step();Check(!Button("Dash",2),"Natural deferred release acknowledged once");
+   foreach(Type owner in new[]{typeof(BoolDialog),typeof(ObscuredDialog)}){
+    var codes=(IEnumerable<CodeInstruction>)Invoke("ReadDialogOpen",new CodeInstruction[0],owner.GetMethod("Update"));
+    var emitted=new List<CodeInstruction>(codes);Check(emitted[0].opcode==OpCodes.Ldarg_0&&emitted[1].operand is MethodInfo&&emitted[emitted.Count-1].operand is MethodInfo,"Dialogue patch emits direct native open-state calls");
+    Check(emitted.Count==(owner==typeof(BoolDialog)?3:4),"ObscuredBool converts directly with no boxing/reflection per frame");
+   }
    Step();plugin.File.Get<ControllerBinding>("PrimaryAction").Value=ControllerBinding.LeftTrigger;plugin.File.Get<ControllerBinding>("Camera").Value=ControllerBinding.None;
    Step(lt:1);Check(!Button("Fire1"),"Live remap cannot reinterpret a held control");Step();Step(lt:1);Check(Button("Fire1"),"Remapped primary after neutral");
    ui=Ui();Check(!Button("Fire1"),"Dialog does not consume remapped game primary");EndUi(ui);
@@ -154,12 +181,12 @@ namespace QVVR {
    renderer.HasInputFocus=false;Step(right:primary);Check(Button("Fire1",original:true)&&Axis("Horizontal",.6f)==.6f,"Unfocused original input fallback");
    renderer.HasInputFocus=true;Step(right:primary);Check(!Button("Fire1",1),"Focus return held button suppressed");Step();
    renderer.HasInputFocus=false;Step(rx:.8f);Check(bridge.DioramaStick.sqrMagnitude==0,"Unfocused stick cannot move placement");
-   renderer.HasInputFocus=true;Step(rx:.8f);Check(bridge.DioramaStick.sqrMagnitude==0,"Held stick on focus return waits for neutral");Step();Step(rx:.8f);Check(bridge.DioramaStick.x==.8f,"Fresh stick movement works after neutral");Step();
+   renderer.HasInputFocus=true;Step(rx:.8f);Check(bridge.DioramaStick.sqrMagnitude==0,"Held stick on focus return waits for neutral");Step();Step(rx:.8f);Check(bridge.DioramaStick.x>0,"Fresh stick movement works after neutral");Step();
    renderer.HasLeft=renderer.HasRight=false;Step();Check(Button("Fire2",original:true),"No-controller desktop fallback");renderer.HasLeft=renderer.HasRight=true;
    Step(right:primary);Check(!Button("Confirm",1),"Reconnected held button suppressed");Step();
    plugin.File.Get<bool>("ExclusiveVrControls").Value=false;Step();Check(Button("Fire2",original:true),"Mixed mode preserves keyboard/gamepad input");Check(Axis("Horizontal2",.8f)==0,"Mixed mode cannot leak mirrored diorama input into camera axes");
    plugin.File.Get<bool>("ExclusiveVrControls").Value=true;Step();Check(Button("UnrecognizedAction",original:true),"Unknown action preserved");
-   renderer.UsesOpenXr=false;Step(right:secondary);Check(Button("Fire2")&&!Button("Pause",original:true),"OpenVR path uses the same portable roles");Step();renderer.UsesOpenXr=true;
+   renderer.UsesOpenXr=false;Step(right:secondary);Check(Button("Fire2")&&!Button("Pause",original:true),"OpenVR path uses the same portable roles");Step();renderer.UsesOpenXr=TestOpenXr;
    plugin.File.Get<ControllerBinding>("PrimaryAction").Value=ControllerBinding.Default;plugin.File.Get<ControllerBinding>("Camera").Value=ControllerBinding.Default;
    plugin.File.Get<ControllerLayout>("Layout").Value=ControllerLayout.TrackpadWands;Step();Step(rt:1);Check(Button("Fire1",1),"Wand preset runs through real polling, not just the policy");Step();
    Step(left:click);Check(Button("Swap",1),"Wand swap polling");Step();Step(right:click);Check(menu.Visible,"Wand single-pad settings binding");Step();
@@ -179,10 +206,10 @@ namespace QVVR {
  }
 }
 '@
-$using='using System;using System.Collections.Generic;using System.Reflection;using System.Runtime.InteropServices;using BepInEx.Configuration;using HarmonyLib;using UnityEngine;using Valve.VR;'
+$using='using System;using System.Collections.Generic;using System.Reflection;using System.Reflection.Emit;using System.Runtime.InteropServices;using BepInEx.Configuration;using HarmonyLib;using UnityEngine;using Valve.VR;'
 Add-Type -TypeDefinition ($using+$fixture+($sources -join "`n"))
-$count=[QVVR.ControllerInputTests]::Run()
-Write-Host "Portable controller input: $count production bridge/config/policy assertions passed, including zero warmed managed allocations. API doubles, not headset QA."
+$count=[QVVR.ControllerInputTests]::Run($Backend -eq 'OpenXR')
+Write-Host "Portable controller input ($Backend): $count production bridge/config/policy assertions passed, including zero warmed managed allocations. API doubles, not headset QA."
 
 Add-Type -Path (Join-Path $root '.deps/bepinex-5.4.23.5/BepInEx/core/Mono.Cecil.dll')
 if($GameDir){
@@ -193,6 +220,11 @@ if($GameDir){
   foreach($action in @('Fire1','Fire2','Swap','Dash','Cam','Load')){if(!($il | Where-Object {$_.OpCode.Name -eq 'ldstr' -and $_.Operand -eq $action})){throw "Missing native semantic action: $action"}}
   foreach($pair in @(@('Pause','Update'),@('DialogManager','DialogUpdate'),@('PrevDialogManager','Update'),@('ClearUI','Update'),@('IntroWorldManager','Excute'),@('NewIntroWorldManager','Excute'))){
    $type=$game.MainModule.Types | Where-Object Name -eq $pair[0];if(!($type.Methods | Where-Object Name -eq $pair[1])){throw "Missing UI context method: $($pair -join '.')"}
+  }
+  foreach($name in @('DialogManager','PrevDialogManager')){
+   $type=$game.MainModule.Types | Where-Object FullName -eq $name;$getter=$type.Methods | Where-Object Name -eq 'get_IsOpen';
+   if(!$getter){throw "Missing direct dialogue state getter: $name"}
+   if($getter.ReturnType.FullName -notin @('System.Boolean','CodeStage.AntiCheat.ObscuredTypes.ObscuredBool')){throw "Unsupported dialogue state: $name"}
   }
  }finally{$game.Dispose()}
  Write-Host 'Installed QV semantic input actions and UI query scopes verified by read-only metadata.'

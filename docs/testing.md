@@ -3,6 +3,11 @@
 Use PowerShell 7 and the local, ignored dependencies described in the README.
 Run the canonical build after source changes:
 
+For a complete local candidate check, `tools/verify-release.ps1` runs the build,
+every test script in its own process, and the working-tree publication audit.
+Private reports remain under ignored artifacts. This does not deploy or publish,
+and hardware acceptance gates below remain mandatory.
+
 ```powershell
 .\tools\build.ps1
 .\tools\test-comfort.ps1
@@ -14,7 +19,10 @@ Run the canonical build after source changes:
 .\tools\test-intro-visuals.ps1
 .\tools\test-ui-effects.ps1
 .\tools\test-level-intro.ps1
+.\tools\test-level-entry.ps1
+.\tools\test-settings-menu.ps1
 .\tools\test-openxr-math.ps1
+.\tools\test-openvr-timing.ps1
 .\tools\test-native-load.ps1
 .\tools\test-native-pose.ps1
 .\tools\test-openxr-backend.ps1
@@ -63,7 +71,7 @@ the tester starts QV manually.
 7. **Liquids:** water, ink/pots, fog and RainCore from multiple viewpoints, both
    eyes, following level transitions and desktop/VR toggles. A/B LiquidDepthFix;
    compare CPU/GPU times in water-heavy rooms and scenes with no active liquid.
-8. **Black caps (off by default):** enable in menu, walk around cliffs and rotate/
+8. **Black caps (reference profile enabled):** A/B the config flag, walk around cliffs and rotate/
    resize the diorama; check sides/top/bottom, fade, depth, and empty passthrough
    regions. Buildings inside the cylinder must stay unchanged. Check indexed
    batch registration and cumulative replay/composite counters in sparse logs.
@@ -158,7 +166,7 @@ These API doubles are not a GPU or headset image test. Placement tests cover
 entry multipliers, gain bounds and 100 non-compounding save/entry round-trips.
 
 On Frame, test hub pause/options/achievements at scale 2 and its dedicated
-HubPauseDistanceMeters default 1.2 m, adjusting 0.6-3 m live in VR settings, with hub
+HubPauseDistanceMeters default 1.2 m, adjusting 0.6-3 m through config, with hub
 World, map/costume and gameplay pause unchanged. Select a level: no rectangular
 fade edges should appear when looking around; both eyes/HUD/passthrough fade
 together, including Loading fade-in/out and final gameplay fade-in. Check back/
@@ -310,6 +318,68 @@ measured Frame timing. Do not claim a speedup from synthetic correctness tests.
 
 ## Portable input regression checks
 
+OpenVR cadence checks: tools/test-openvr-timing.ps1 executes the production timing
+policy and renderer query helpers with API doubles. It covers 60/72/80/90/120/144/
+240 Hz, vsync subtraction, refresh changes, unavailable properties, invalid/stale
+values, bounded/current-pose fallback, XR isolation and warmed zero allocations.
+Compiled checks keep property reads off the per-frame/per-eye path and retain the
+predicted pose in native submission. It also runs test-controller-input.ps1
+-Backend OpenVR in a separate process, exercising the entire input fixture through
+the OpenVR branch, including disconnect/focus/menu and both controller presets.
+The default controller fixture still uses -Backend OpenXR for Frame regressions.
+
+Pending PCVR hardware gate: Quest 3 through Virtual Desktop with SteamVR, then
+Steam Link separately. Use Passthrough=false, FaceButtons, compositor pacing and
+native Windows -force-d3d11. Verify both eye projections/IPD, orientation, scale,
+head translation, two-hand placement, A/B/X/Y/triggers/stick clicks, right-stick
+dead zone, menu/dialogue/pause/movie transitions, focus loss and reconnection.
+Check black/green exterior, cylinder fade/caps and no-runtime desktop recovery.
+Test a refresh change when supported, recording the selected runtime frequency
+and actual CPU/GPU timings (e.g. 90 Hz has an 11.11 ms frame budget, 120 Hz 8.33 ms).
+Neither the source audit nor passing API doubles proves wireless latency or
+physical controller-role mapping. Do not mark either streaming route validated
+until tested with the exact candidate; do not auto-start QV or change system
+OpenXR/runtime settings as part of these tests.
+
+Compact settings checks: run tools/test-settings-menu.ps1 after building. It
+executes the production menu navigation/adjust/action/reset/text methods with API
+doubles, verifies the exact 15-item whitelist/order, wraparound, toggles, actions,
+absence of edits to hidden settings, and reset via ConfigEntry default metadata.
+It compares Plugin bind defaults against the package sample and checks compiled
+Adjust/RefreshText exclude removed controls. Existing user values must not be
+changed on menu open/update. The reference profile is the last backed-up Frame
+config from 2026-10-22; round float accumulation noise to 1.8 for panel/HUD size.
+It contains numeric/boolean presentation values only, not personal data or saved
+level placement. Verify a current device config before a later profile refresh.
+
+Frame acceptance: verify all 15 rows fit the panel, stick selection
+wraps without invisible rows, A invokes recenter/restore/place and toggles only
+void color/passthrough/clouds, and B/both stick clicks still close and save.
+Confirm two-hand and stick placement still work with the menu closed. Hidden
+config values must survive deployment/open/close, while explicit restore uses
+the new reference defaults (-16 degree tilt, 1.8/1.5/0.6 flat panel, 1.8/1.4 HUD,
+29% inset, 1.2 m hub pause, caps/stereo selections/cylinder on, normal probe).
+Other headset framing and cap GPU cost remain hardware QA; no extra render pass
+or per-frame layout work is introduced by this menu cleanup.
+
+Standard level-entry checks: run tools/test-level-entry.ps1 after the canonical
+build; optional -GameDir verifies both native 5.5-second fade branches and their
+dialog/control callbacks in the installed assembly, read-only. The fixture runs
+the production policy and transpiler with API doubles, executes emitted helper IL,
+and checks callback/instruction preservation, both branches, exact fade selection,
+layout rejection, live rollback, cleanup and failure fallback. Compiled guards
+require enabled/initialized independent gameplay VR outside fixed cinema; comfort
+tests audit the helper for managed allocations. This is not a Unity Mono test.
+
+Frame acceptance: enter several levels, including one with tutorial and one
+without, retry and return from a genuine first-level intro. Confirm the usual
+blank pre-dialogue interval is about 1.5 s after GameStart, dialogue appears once,
+movement is enabled normally, tutorials/save flow survive, and movie playback is
+not skipped. Compare Comfort.LevelEntrySeconds=5.5 and F8 desktop fallback on a
+subsequent level entry. Test normal cinematic completion and skip separately.
+Do not shorten an already-running tween or manually invoke its callback. Record
+CPU/GPU frame times at 72 Hz; the headless test does not establish hardware timing.
+
 Run `tools/test-controller-input.ps1` (optionally `-GameDir` for read-only installed
 QV metadata checks), `tools/test-render-corrections.ps1`, and `tools/test-comfort.ps1`
 after the canonical build. The controller fixture compiles the actual bridge,
@@ -322,6 +392,14 @@ measures zero warmed managed allocations for 512 polling/button/axis iterations;
 this .NET test is not a Unity/Mono or headset timing benchmark. IL allocation
 guards cover the new policy/query/snapshot helpers. Installed metadata guards
 verify the game's semantic actions and known UI query methods.
+
+Regression cases also cover closed-dialog confirm polling without a gameplay
+input latch, open-dialog consumption, recovery while walking without recentering,
+delayed natural ButtonUp delivery, and bool/ObscuredBool getter IL emission.
+Installed metadata checks verify both dialogue getters. Placement tests cover
+40% dead-zone neutrality, smooth onset, full deflection, axis switching hysteresis
+and invalid samples; navigation axes remain independent. These API-double tests
+do not execute the patched game under Unity Mono.
 
 Frame manual acceptance: verify right A primary/confirm, B secondary/back without
 pausing, left D-pad up pause, left D-pad down swap, right trigger dash, left trigger
@@ -346,6 +424,24 @@ hardware validation. The spatial fixture checks actual placement math including
 distance limits, existing out-of-range grab positions, scale independence and
 stall/invalid-input safety; comfort IL guards cover the new hot methods.
 
+For the A-lock regression, hold the walking stick and repeatedly tap/release A
+with no dialogue open, then repeat after opening/closing dialogue and pause.
+Movement must recover without releasing the stick; a held confirm must not leak
+into gameplay. Temporarily inactive dash/camera/load polling must still receive up.
+For placement, rotate with a small diagonal and verify no approach/retreat occurs;
+deliberately switch toward the vertical axis and verify smooth translation.
+
+Water color trial: run tools/test-liquid-depth.ps1 and tools/test-comfort.ps1.
+The fixture checks exact material selection, shared-material deduplication, live
+foam restoration, failure cleanup and exclusions; compiled IL checks verify the
+override surrounds gameplay stereo rendering. Inspect a local scene read-only
+with tools/inspect-water-shading.py if further shader diagnosis is needed (local
+UnityPy dependency required; do not commit extracted game assets/disassembly).
+Compare WaterFoamFix=true/false in the same water level from above and the side,
+with LiquidDepthFix unchanged. Verify original blue/depth shading, acceptable foam
+removal, ink/fog/effects, both eyes, transitions and desktop fallback. Record CPU
+and GPU times at 72 Hz; tests alone establish neither water correctness nor cost.
+
 For another headset/controller, first verify the runtime's normalized role mapping
 and select FaceButtons or TrackpadWands. Test every configured action, tap/hold/up,
 trackpad/stick axes, grip gestures and settings access on physical hardware.
@@ -353,6 +449,95 @@ Wand defaults deliberately leave optional game camera/menu page buttons unbound;
 confirm navigation remains usable or assign explicit page buttons for the game
 screen in question. Preset tests alone do not establish device compatibility,
 OpenXR passthrough support or acceptable Frame CPU/GPU timing.
+
+## Dialogue HUD validation
+
+Dialogue HUD checks: after the canonical build, run `tools/test-dialog-hud.ps1`
+(optional `-GameDir` verifies installed QV dialogue projection metadata) and
+`tools/test-comfort.ps1`. The fixture executes production layout code through
+nested/rotated/scaled parents with off-center pivots, actor motion, hidden,
+disabled, reparented and destroyed UI, repeated prepare/restore, setter/render
+failure cleanup and zero warmed managed allocations. Compiled IL verifies
+centering around the single existing UI capture, finally restoration, original
+layout cache snapshot order, cold discovery and cinema/flat gating.
+
+Frame visual acceptance: open dialogue while facing away from the original game
+camera, then walk around and rotate/resize/translate the diorama. The box should
+open centered in front, remain on the upright viewer-following HUD with its usual
+lag, preserve text/portrait/popup/advance animations, and draw above the world.
+Check both speakers, intro-hub dialogue, repeated open/close, pause/scene changes,
+flat cinematics and desktop fallback. Compare UI capture/reuse and CPU/GPU timing
+at 72 Hz with `Comfort.CenterDialogs` on/off. Correctness tests do not establish
+headset readability or a measured performance gain.
+
+## Low-overhead maintenance validation
+
+Run the canonical build, `tools/test-performance.ps1`, `tools/test-comfort.ps1`,
+`tools/test-native-load.ps1`, `tools/test-shader-clip.ps1`, and the dialogue,
+controller, intro-menu and first-level/sector cinema regressions. The UI fixture
+checks unchanged subscription retention, removed/new widget lifecycle, continuous
+capture without tracking, recovery probes, immediate rollback, disable/scene
+cleanup and zero warmed managed allocations on the suspended path. The WARP shader
+test runs in separate processes with diagnostics enabled and disabled. It verifies
+identical cylinder/alpha/feather/cap correctness and zero hot C++ allocations in
+both modes; the disabled mode also asserts zero diagnostic staging buffers and
+zero cached diagnostic shader bytecodes. No real eye textures are read back.
+
+On Frame, keep the same scene/view/resolution and compare
+`LightweightUiMaintenance=true/false`. Check dynamic dialogue, hidden/reopened UI,
+animated materials, pause/options, new widgets and scene changes; suspension must
+retain full capture cadence, never freeze text/fades. Summaries report suspension
+and continuous reason alongside capture/reuse counts. Compare maintenance elapsed
+time, separately reported log batch time, cadence p95/maximum and GPU samples.
+Use `DiagnosticsEnabled=true` only when detailed diagnostics/dumps are needed
+(manual restart); basic summaries are 30 seconds by default. Detailed GPU timings
+still request five-second verbose timing output. Test menu/cinema event hooks,
+late injection, paused/skipped movies and delayed camera activation with the idle
+one-second recovery fallback. Preserve original game files and deploy-only policy.
+No performance gain is established until physical Frame A/B measurements pass.
+
+## Full-world VR mode
+
+`tools/test-full-vr.ps1` executes production `FullVrViewState` and `SpatialMath`
+using the shared Unity math doubles. It checks normal-scale spawn, physical head
+translation and stereo IPD, yaw about the head after room-scale walking, upright
+forward/back travel, player-follow without double translation, viewer-relative
+character input/source-camera yaw cancellation, invalid inputs/stalls, refresh-rate
+independence and separate diorama/free-camera lifetime. Warmed state updates and
+eye mapping must allocate zero managed bytes. Compiled renderer guards verify
+eye/rig/input/reset wiring and mode guards, while `test-comfort.ps1` includes all
+new hot methods in its allocation IL audit. The clipping truth table excludes
+panels and disabled dioramas regardless of passthrough composition.
+
+Hardware acceptance remains pending: switch modes repeatedly on Frame OpenXR
+alpha blend and Quest 3/Virtual Desktop SteamVR/OpenVR, verify both eyes, restored
+miniature pose/size, HUD/menu anchors, cinematics, focus loss, recenter and scene
+entry. Walk around physically before turning with the right stick (no orbit or
+scale change), then combine player follow with camera navigation. Confirm pause,
+dialogues, two-grip gestures and no-runtime desktop fallback remain correct.
+There is no collision avoidance in free-camera mode. Compare CPU/GPU times at
+72 Hz in the same scene; summaries label `full-vr` and `diorama` separately.
+Automated checks do not establish normal-scale comfort or whole-level GPU cost.
+
+## Installer safety fixtures
+
+`tools/test-installers.ps1` exercises the actual archive validator, PC uninstaller
+and Frame orchestration with an ADB double. It covers package allowlist parity,
+hash corruption, traversal/case/unexpected/symlink ZIP entries, Windows junction
+rejection, running-game refusal, WhatIf, backup/settings/other-mod preservation,
+idempotent uninstall, optional config removal and check/upload/install ordering.
+Run in Windows PowerShell 5.1 with process-scoped ExecutionPolicy Bypass and in
+PowerShell 7. No administrator rights or permanent policy change are needed for
+the distributed scripts. Sandbox restrictions may require an unsandboxed fixture
+run to create test junctions or start Git Bash; all fixtures stay under artifacts.
+
+`tools/test-frame-overlay.ps1` executes the production POSIX helper in Git Bash
+against fake QV folders. Only the allowed storage-prefix gate is translated to
+the fixture root; ADB, pgrep and bsdtar are boundary doubles. It tests fresh/update
+installs, CRLF checksum manifests, preflight conflicts before overlay writes,
+process-query errors/running QV, linked content, backups and uninstall/reinstall
+settings behavior. No real Frame or game is changed. USB authorization/transfer,
+on-device tools, permissions and interruption recovery still need Frame acceptance.
 
 ## Reporting safely
 

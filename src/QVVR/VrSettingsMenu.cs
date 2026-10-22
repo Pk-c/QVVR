@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using BepInEx.Configuration;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UI;
@@ -8,6 +9,11 @@ namespace QVVR
 {
     internal sealed class VrSettingsMenu
     {
+        private enum Item
+        {
+            ViewTilt, RenderProfile, Recenter, RestoreDefaults, CylindricalDiorama, Radius, Height, CenterHeight,
+            VoidColor, Passthrough, EdgeFade, Clouds, PlaceInFront, Size, XrCap, Count
+        }
         private Plugin plugin;
         private OpenVrRenderer renderer;
         private GameObject root;
@@ -40,7 +46,7 @@ namespace QVVR
                 root.layer = layer;
                 root.transform.SetParent(parent, false);
                 RectTransform rect = (RectTransform)root.transform;
-                rect.sizeDelta = new Vector2(960f, 1404f);
+                rect.sizeDelta = new Vector2(960f, 940f);
                 Canvas canvas = root.GetComponent<Canvas>();
                 canvas.renderMode = RenderMode.WorldSpace;
                 canvas.sortingOrder = 4000;
@@ -55,12 +61,12 @@ namespace QVVR
                 image.material = backgroundMaterial;
                 image.color = new Color(0.035f, 0.05f, 0.09f, 0.96f);
                 image.raycastTarget = false;
-                CreateText("Title", font, layer, 610f, 50).text = "QVVR - SETTINGS";
-                rows = new Text[27];
+                CreateText("Title", font, layer, 370f, 50).text = "QVVR - SETTINGS";
+                rows = new Text[(int)Item.Count];
                 for (int index = 0; index < rows.Length; index++)
-                    rows[index] = CreateText("Row" + index, font, layer, 530f - index * 40f, 32);
-                Text footer = CreateText("Help", font, layer, -632f, 25);
-                footer.text = "Up/down: select   Left/right: adjust\nA: action   B or both sticks: close and save\nBoth grips: move / resize / rotate\nRender profile: next launch; game not paused";
+                    rows[index] = CreateText("Row" + index, font, layer, 290f - index * 40f, 32);
+                Text footer = CreateText("Help", font, layer, -382f, 25);
+                footer.text = "Up/down: select   Left/right: adjust\nA: action   B or both sticks: close and save\nDiorama: both grips; full VR: right stick camera\nRender profile: next launch; game not paused";
                 RefreshText();
                 root.SetActive(false);
                 Plugin.Log.LogInfo("QVVR world-anchored settings menu ready: click both sticks to toggle.");
@@ -153,99 +159,84 @@ namespace QVVR
             lastDirection = direction;
             if (confirmDown)
             {
-                if (selected == 7) renderer.Recenter();
-                else if (selected == 20) renderer.PlaceInFront();
-                else if (selected == 8) ResetDefaults();
-                else if (selected == 13 || selected == 14 || selected == 19 || selected == 22 || selected == 23) Adjust(1f);
+                switch ((Item)selected)
+                {
+                    case Item.Recenter: renderer.Recenter(); break;
+                    case Item.PlaceInFront: renderer.PlaceInFront(); anchorNeeded = true; break;
+                    case Item.RestoreDefaults: ResetDefaults(); break;
+                    case Item.CylindricalDiorama: case Item.VoidColor: case Item.Passthrough: case Item.Clouds: Adjust(1f); break;
+                }
                 RefreshText();
             }
         }
 
         private void Adjust(float sign)
         {
-            switch (selected)
+            switch ((Item)selected)
             {
-                case 0: renderer.AdjustPlacementDistance(sign * 0.1f); anchorNeeded = true; break;
-                case 1: plugin.WorldUnitsPerMeter.Value = Mathf.Clamp(plugin.WorldUnitsPerMeter.Value + sign * 0.25f, 0.25f, 10f); anchorNeeded = true; break;
-                case 2: plugin.ViewPitchDegrees.Value = ComfortMath.ClampPitch(plugin.ViewPitchDegrees.Value + sign * 2f); anchorNeeded = true; break;
-                case 3: plugin.PanelWidth.Value = Mathf.Clamp(plugin.PanelWidth.Value + sign * 0.1f, 1f, 4f); break;
-                case 4: plugin.PanelDistance.Value = Mathf.Clamp(plugin.PanelDistance.Value + sign * 0.1f, 1.5f, 5f); break;
-                case 5: plugin.PanelFollowLag.Value = Mathf.Clamp(plugin.PanelFollowLag.Value + sign * 0.05f, 0f, 1.5f); break;
-                case 6: plugin.SelectQualityPreset(plugin.QualityPreset.Value + (sign > 0f ? 1 : -1)); break;
-                case 9: plugin.DioramaEnabled.Value = !plugin.DioramaEnabled.Value; break;
-                case 10: plugin.DioramaRadius.Value = Mathf.Clamp(plugin.DioramaRadius.Value + sign, 0.5f, 200f); break;
-                case 11: plugin.DioramaHeight.Value = Mathf.Clamp(plugin.DioramaHeight.Value + sign, 0.5f, 200f); break;
-                case 12: plugin.DioramaCenterHeight.Value = Mathf.Clamp(plugin.DioramaCenterHeight.Value + sign * 0.5f, -200f, 200f); break;
-                case 13: plugin.VoidBackground.Value = DioramaMath.GreenBackground(plugin.VoidBackground.Value) ? 0 : 1; break;
-                case 14: plugin.PassthroughEnabled.Value = !plugin.PassthroughEnabled.Value; break;
-                case 15: renderer.SetCylinderProbe((renderer.CylinderProbeMode + (sign > 0f ? 1 : 3)) % 4); break;
-                case 16: plugin.DioramaFeatherWidth.Value = Mathf.Clamp(plugin.DioramaFeatherWidth.Value + sign * 0.05f, 0f, 5f); break;
-                case 17: plugin.GameplayHudScale.Value = DioramaMath.HudScale(plugin.GameplayHudScale.Value + sign * 0.1f); break;
-                case 18: plugin.GameplayHudDistance.Value = Mathf.Clamp(plugin.GameplayHudDistance.Value + sign * 0.1f, 1f, 5f); break;
-                case 19: plugin.HideDecorativeClouds.Value = !plugin.HideDecorativeClouds.Value; break;
-                case 20: renderer.PlaceInFront(); anchorNeeded = true; break;
-                case 21: plugin.DioramaWorldScale.Value = DioramaScaleState.Clamp(plugin.DioramaWorldScale.Value * (sign > 0f ? 1.25f : 0.8f)); break;
-                case 22: plugin.BlackCutSurfaces.Value = !plugin.BlackCutSurfaces.Value; break;
-                case 23: plugin.StereoSelectionMenus.Value = !plugin.StereoSelectionMenus.Value; break;
-                case 24: plugin.GameplayHudInset.Value = HudLayoutMath.Percent(plugin.GameplayHudInset.Value + sign * 2f); break;
-                case 25: plugin.HubPauseDistance.Value = MenuScenePolicy.PauseDistance(plugin.HubPauseDistance.Value + sign * 0.1f); break;
-                case 26: plugin.XrResolutionCap.Value = RenderBudget.NextXrCap(plugin.XrResolutionCap.Value, sign); break;
+                case Item.ViewTilt: plugin.ViewPitchDegrees.Value = ComfortMath.ClampPitch(plugin.ViewPitchDegrees.Value + sign * 2f); anchorNeeded = true; break;
+                case Item.RenderProfile: plugin.SelectQualityPreset(plugin.QualityPreset.Value + (sign > 0f ? 1 : -1)); break;
+                case Item.CylindricalDiorama: plugin.DioramaEnabled.Value = !plugin.DioramaEnabled.Value; anchorNeeded = true; break;
+                case Item.Radius: plugin.DioramaRadius.Value = Mathf.Clamp(plugin.DioramaRadius.Value + sign, 0.5f, 200f); break;
+                case Item.Height: plugin.DioramaHeight.Value = Mathf.Clamp(plugin.DioramaHeight.Value + sign, 0.5f, 200f); break;
+                case Item.CenterHeight: plugin.DioramaCenterHeight.Value = Mathf.Clamp(plugin.DioramaCenterHeight.Value + sign * 0.5f, -200f, 200f); break;
+                case Item.VoidColor: plugin.VoidBackground.Value = DioramaMath.GreenBackground(plugin.VoidBackground.Value) ? 0 : 1; break;
+                case Item.Passthrough: plugin.PassthroughEnabled.Value = !plugin.PassthroughEnabled.Value; break;
+                case Item.EdgeFade: plugin.DioramaFeatherWidth.Value = Mathf.Clamp(plugin.DioramaFeatherWidth.Value + sign * 0.05f, 0f, 5f); break;
+                case Item.Clouds: plugin.HideDecorativeClouds.Value = !plugin.HideDecorativeClouds.Value; break;
+                case Item.PlaceInFront: renderer.PlaceInFront(); anchorNeeded = true; break;
+                case Item.Size: plugin.DioramaWorldScale.Value = DioramaScaleState.Clamp(plugin.DioramaWorldScale.Value * (sign > 0f ? 1.25f : 0.8f)); break;
+                case Item.XrCap: plugin.XrResolutionCap.Value = RenderBudget.NextXrCap(plugin.XrResolutionCap.Value, sign); break;
             }
         }
 
         private void ResetDefaults()
         {
             renderer.Recenter();
-            plugin.CameraDistanceScale.Value = 0.4f;
-            plugin.WorldUnitsPerMeter.Value = 1f;
-            plugin.ViewPitchDegrees.Value = 0f;
-            plugin.PanelWidth.Value = 2.4f;
-            plugin.PanelDistance.Value = 2.8f;
-            plugin.PanelFollowLag.Value = 0.35f;
-            plugin.GameplayHudScale.Value = 2f;
-            plugin.GameplayHudDistance.Value = 2.8f;
-            plugin.HubPauseDistance.Value = 1.2f;
-            plugin.XrResolutionCap.Value = 1f;
-            plugin.GameplayHudInset.Value = 12f;
-            plugin.RightGripTranslationGain.Value = 20f;
-            plugin.DioramaWorldScale.Value = 1f;
-            plugin.DioramaMoveSensitivity.Value = 1.15f;
-            plugin.DioramaRotationSensitivity.Value = 1.1f;
+            Reset(plugin.CameraDistanceScale);
+            Reset(plugin.WorldUnitsPerMeter);
+            Reset(plugin.ViewPitchDegrees);
+            Reset(plugin.PanelWidth);
+            Reset(plugin.PanelDistance);
+            Reset(plugin.PanelFollowLag);
+            Reset(plugin.GameplayHudScale);
+            Reset(plugin.GameplayHudDistance);
+            Reset(plugin.HubPauseDistance);
+            Reset(plugin.XrResolutionCap);
+            Reset(plugin.GameplayHudInset);
+            Reset(plugin.RightGripTranslationGain);
+            Reset(plugin.DioramaWorldScale);
+            Reset(plugin.DioramaMoveSensitivity);
+            Reset(plugin.DioramaRotationSensitivity);
+            Reset(plugin.DioramaEnabled);
+            Reset(plugin.BlackCutSurfaces);
+            Reset(plugin.StereoSelectionMenus);
+            renderer.SetCylinderProbe(0);
             anchorNeeded = true;
         }
+
+        // Use the same shipped defaults as Config.Bind, including config-only
+        // settings. Never replace a user's saved values merely by opening a menu.
+        private static void Reset<T>(ConfigEntry<T> entry) { entry.Value = (T)entry.DefaultValue; }
 
         // Text strings/meshes change only on menu events, never on each render.
         private void RefreshText()
         {
-            rows[0].text = "Diorama distance: " + Format(renderer.PlacementDistance) + " m";
-            rows[1].text = "World units: " + Format(plugin.WorldUnitsPerMeter.Value) + " units / meter";
-            rows[2].text = "View tilt: " + Format(plugin.ViewPitchDegrees.Value) + " deg (+ = downward)";
-            rows[3].text = "Panel width: " + Format(plugin.PanelWidth.Value) + " m";
-            rows[4].text = "Panel distance: " + Format(plugin.PanelDistance.Value) + " m";
-            rows[5].text = "Panel follow lag: " + Format(plugin.PanelFollowLag.Value) + " s";
-            rows[6].text = "Render profile: " + (plugin.QualityPreset.Value == 0 ? "Performance" : plugin.QualityPreset.Value == 2 ? "Sharp" : "Balanced");
-            rows[7].text = "Recenter view (A)";
-            rows[8].text = "Restore comfort defaults (A)";
-            rows[9].text = "Cylindrical diorama: " + (plugin.DioramaEnabled.Value ? "On" : "Off");
-            rows[10].text = "Diorama radius: " + Format(plugin.DioramaRadius.Value) + " units";
-            rows[11].text = "Diorama height: " + Format(plugin.DioramaHeight.Value) + " units";
-            rows[12].text = "Center height: " + Format(plugin.DioramaCenterHeight.Value) + " units";
-            rows[13].text = "Void color: " + (DioramaMath.GreenBackground(plugin.VoidBackground.Value) ? "Green" : "Black");
-            rows[14].text = "OpenXR passthrough: " + (plugin.PassthroughEnabled.Value ? "On" : "Off") + " (restart)";
-            rows[15].text = "Cylinder probe: " + renderer.CylinderProbeMode + " - " +
-                (renderer.CylinderProbeMode == 1 ? "Unclipped passes" : renderer.CylinderProbeMode == 2 ? "Unlimited" :
-                 renderer.CylinderProbeMode == 3 ? "Neutral matrix" : "Normal");
-            rows[16].text = "Cylinder edge fade: " + Format(plugin.DioramaFeatherWidth.Value) + " units";
-            rows[17].text = "Gameplay HUD size: " + Format(plugin.GameplayHudScale.Value) + " x";
-            rows[18].text = "Gameplay HUD distance: " + Format(plugin.GameplayHudDistance.Value) + " m";
-            rows[19].text = "Decorative clouds: " + (plugin.HideDecorativeClouds.Value ? "Hidden" : "Visible");
-            rows[20].text = "Place diorama in front of me (A)";
-            rows[21].text = "Diorama size: " + plugin.DioramaWorldScale.Value.ToString("0.000", CultureInfo.InvariantCulture) + " x";
-            rows[22].text = "Black cut surfaces (experimental): " + (plugin.BlackCutSurfaces.Value ? "On" : "Off");
-            rows[23].text = "3D costume/map menus: " + (plugin.StereoSelectionMenus.Value ? "On" : "Off");
-            rows[24].text = "HUD center inset: " + Format(plugin.GameplayHudInset.Value) + " %";
-            rows[25].text = "Hub pause/achievements distance: " + Format(MenuScenePolicy.PauseDistance(plugin.HubPauseDistance.Value)) + " m";
-            rows[26].text = "XR eye scale cap: " + (plugin.XrResolutionCap.Value <= 0f ? "Off" : Format(plugin.XrResolutionCap.Value)) + " (restart)";
+            rows[(int)Item.ViewTilt].text = "View tilt: " + Format(plugin.ViewPitchDegrees.Value) + " deg (+ = downward)";
+            rows[(int)Item.RenderProfile].text = "Render profile: " + (plugin.QualityPreset.Value == 0 ? "Performance" : plugin.QualityPreset.Value == 2 ? "Sharp" : "Balanced");
+            rows[(int)Item.Recenter].text = "Recenter view (A)";
+            rows[(int)Item.RestoreDefaults].text = "Restore comfort defaults (A)";
+            rows[(int)Item.CylindricalDiorama].text = "Cylindrical diorama: " + (plugin.DioramaEnabled.Value ? "On" : "Off - full-scale VR");
+            rows[(int)Item.Radius].text = "Diorama radius: " + Format(plugin.DioramaRadius.Value) + " units";
+            rows[(int)Item.Height].text = "Diorama height: " + Format(plugin.DioramaHeight.Value) + " units";
+            rows[(int)Item.CenterHeight].text = "Center height: " + Format(plugin.DioramaCenterHeight.Value) + " units";
+            rows[(int)Item.VoidColor].text = "Void color: " + (DioramaMath.GreenBackground(plugin.VoidBackground.Value) ? "Green" : "Black");
+            rows[(int)Item.Passthrough].text = "OpenXR passthrough: " + (plugin.PassthroughEnabled.Value ? "On" : "Off") + " (restart)";
+            rows[(int)Item.EdgeFade].text = "Cylinder edge fade: " + Format(plugin.DioramaFeatherWidth.Value) + " units";
+            rows[(int)Item.Clouds].text = "Decorative clouds: " + (plugin.HideDecorativeClouds.Value ? "Hidden" : "Visible");
+            rows[(int)Item.PlaceInFront].text = plugin.DioramaEnabled.Value ? "Place diorama in front of me (A)" : "Reset camera behind Q (A)";
+            rows[(int)Item.Size].text = "Diorama size: " + plugin.DioramaWorldScale.Value.ToString("0.000", CultureInfo.InvariantCulture) + " x";
+            rows[(int)Item.XrCap].text = "XR eye scale cap: " + (plugin.XrResolutionCap.Value <= 0f ? "Off" : Format(plugin.XrResolutionCap.Value)) + " (restart)";
             for (int index = 0; index < rows.Length; index++)
                 rows[index].color = index == selected ? new Color(0.4f, 0.9f, 1f) : Color.white;
         }

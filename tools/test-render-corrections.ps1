@@ -31,7 +31,7 @@ namespace QVVR {
  }
  public static class CorrectionTests {
   static int checks;static void Check(bool ok,string message){checks++;if(!ok)throw new System.Exception(message);}
-  static uint Buttons(ulong left,float lt,ulong right,float rt,bool game){return ControllerButtonPolicy.Buttons(ControllerButtonPolicy.Physical(left,lt,right,rt),ControllerButtonPolicy.Defaults(new ControllerBindings{Layout=ControllerLayout.FaceButtons,MovementStick=ControllerStick.Left,DioramaStick=ControllerStick.Right,DioramaTurnSpeed=60,DioramaMoveSpeed=.6f,MenuStick=ControllerStick.Either,Exclusive=true}),game);}
+  static uint Buttons(ulong left,float lt,ulong right,float rt,bool game){return ControllerButtonPolicy.Buttons(ControllerButtonPolicy.Physical(left,lt,right,rt),ControllerButtonPolicy.Defaults(new ControllerBindings{Layout=ControllerLayout.FaceButtons,MovementStick=ControllerStick.Left,DioramaStick=ControllerStick.Right,DioramaTurnSpeed=60,DioramaMoveSpeed=.6f,DioramaDeadZone=.4f,MenuStick=ControllerStick.Either,Exclusive=true}),game);}
   public static int Run(){
    var anchor=new FixedPanelAnchor();
    anchor.Latch(new UnityEngine.Vector3(float.NaN,0,0),new UnityEngine.Quaternion(0,0,0,1));Check(!anchor.Valid,"Invalid tracking never latches.");
@@ -98,9 +98,10 @@ try {
  $init=($renderer.Methods | Where-Object Name -eq 'Initialize').Body.Instructions
  if(!($init | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'SceneScale'})){throw 'XR stability cap not applied at texture creation.'}
  $settings=$assembly.MainModule.Types | Where-Object Name -eq 'VrSettingsMenu'
- foreach($name in @('Adjust','RefreshText','ResetDefaults')){
-  if(!(($settings.Methods | Where-Object Name -eq $name).Body.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference] -and $_.Operand.Name -eq 'HubPauseDistance'})){throw "Dedicated pause distance not exposed: $name"}
+ foreach($name in @('Adjust','RefreshText')){
+  if(($settings.Methods | Where-Object Name -eq $name).Body.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference] -and $_.Operand.Name -eq 'HubPauseDistance'}){throw "Config-only pause distance must not be exposed: $name"}
  }
+ if(!(($settings.Methods | Where-Object Name -eq 'ResetDefaults').Body.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference] -and $_.Operand.Name -eq 'HubPauseDistance'})){throw 'Comfort reset must retain the config-only pause distance default.'}
  if(($compat.Methods | Where-Object Name -eq 'Initialize').Body.Instructions | Where-Object {$_.OpCode.Name -eq 'ldstr' -and $_.Operand -eq 'CheckDistance'}){throw 'Do not patch DynamicBone camera-distance decisions.'}
  foreach($name in @('UpdateRig','PositionPanels')){
   if(!(($renderer.Methods | Where-Object Name -eq $name).Body.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'get_FixedCinemaPanel'})){throw "Opening/level cinema fixed-panel route missing: $name"}

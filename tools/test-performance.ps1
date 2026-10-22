@@ -124,6 +124,28 @@ namespace QVVR {
    sdf.Floats.Clear();sdf.Floats[Shader.PropertyToID("_OutlineUVSpeedY")]=1;Check(cache.NeedsCapture(),"Time-driven outline texture scrolling retains capture rate");
    var uninitialized=TmpFixture.Create(true,null);canvas.Children=new object[]{uninitialized};cache.BeginScan();cache.Watch(canvas);cache.Captured();
    Check(cache.NeedsCapture()&&uninitialized.MaterialReads==0,"Null TMP shared material safely retains cadence without cloning");
+   var light=new UiCaptureCache();var ordinary=new UnityEngine.UI.Image();canvas.Children=new object[]{ordinary};
+   Check(light.BeginMaintenance(0,true,true),"First lightweight maintenance discovers UI");light.Watch(canvas);light.EndMaintenance(0,true);light.Captured();
+   Check(!light.Suspended&&!light.NeedsCapture()&&ordinary.Listeners==3,"Static UI retains adaptive capture");
+   light.BeginMaintenance(.5f,true,true);light.Watch(canvas);light.EndMaintenance(.5f,true);light.Captured();
+   Check(ordinary.Registrations==3&&ordinary.Listeners==3,"Unchanged graphics keep existing subscriptions across maintenance");
+   var replacement=new UnityEngine.UI.Image();canvas.Children=new object[]{replacement};light.BeginMaintenance(1,true,true);light.Watch(canvas);light.EndMaintenance(1,true);light.Captured();
+   Check(ordinary.Listeners==0&&replacement.Listeners==3,"Removed widgets are unsubscribed and new widgets watched");
+   replacement.material=new Material();light.BeginMaintenance(2,true,true);light.Watch(canvas);light.EndMaintenance(2,true);
+   Check(light.Suspended&&light.ContinuousReason==2&&replacement.Listeners==0&&light.NeedsCapture(),"Unknown/animated UI keeps full capture rate without dead snapshot subscriptions");
+   Check(!light.BeginMaintenance(2.5f,true,true),"Suspended cache skips repeated heavy rebuilds until the recovery probe");
+   replacement.material=null;light.Captured();Check(light.NeedsCapture(),"Untracked changes during suspension cannot freeze capture");
+   Check(light.BeginMaintenance(4,true,true),"Periodic recovery probe still runs");light.Watch(canvas);light.EndMaintenance(4,true);light.Captured();
+   Check(!light.Suspended&&!light.NeedsCapture()&&replacement.Listeners==3,"Ordinary UI can recover adaptive reuse after suspension");
+   replacement.material=new Material();light.BeginMaintenance(5,true,true);light.Watch(canvas);light.EndMaintenance(5,true);
+   Check(light.BeginMaintenance(5.1f,true,false),"Rollback switch bypasses suspension immediately");light.Watch(canvas);light.EndMaintenance(5.1f,false);light.Captured();
+   Check(!light.Suspended&&replacement.Listeners==3&&light.NeedsCapture(),"Legacy full-tracking fallback retains animated material updates");
+   Check(!light.BeginMaintenance(6,false,true)&&replacement.Listeners==0,"Disabling adaptive UI releases its tracking work");
+   light.BeginMaintenance(7,true,true);light.Watch(canvas);light.EndMaintenance(7,true);
+   for(int i=0;i<64;i++){light.NeedsCapture();light.Captured();}
+   long allocated=GC.GetAllocatedBytesForCurrentThread();for(int i=0;i<512;i++){light.NeedsCapture();light.Captured();}
+   Check(allocated==GC.GetAllocatedBytesForCurrentThread(),"Suspended full-rate capture accounting allocates zero warmed managed bytes");
+   light.Clear();Check(!light.Suspended&&replacement.Listeners==0,"Scene cleanup resets lightweight recovery and subscriptions");
    cache.DisableReuse();Check(cache.Failed&&cache.NeedsCapture()&&subMesh.Listeners==0,"Failed cache releases listeners and fails open");
    cache.BeginScan();cache.Watch(canvas);cache.Captured();
    Check(cache.Failed&&cache.NeedsCapture()&&subMesh.MaterialReads==0&&subMesh.Listeners==0,"Circuit breaker survives scene/maintenance scans");
@@ -165,6 +187,19 @@ try {
  $endFrame=$move | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.DeclaringType.Name -eq 'WaitForEndOfFrame'}
  $scan=$move | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'RedirectOverlayCanvases'}
  if(!$endFrame -or $endFrame.Count -ne 1 -or !$scan -or $endFrame.Offset -ge $scan.Offset){throw 'Maintenance must reuse a cached end-of-frame yield before cold scans.'}
+ foreach($methodName in @('BeginMaintenance','EndMaintenance')){
+  if(!($redirect.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.DeclaringType.Name -eq 'UiCaptureCache' -and $_.Operand.Name -eq $methodName})){throw "Missing lightweight cache lifecycle integration: $methodName"}
+ }
+ # Verify the release branch can actually jump over validation-only hot work.
+ foreach($pair in @(@('LateUpdate','SampleDioramaStability'),@('RenderEye','get_determinant'))){
+  $body=($renderer.Methods | Where-Object Name -eq $pair[0]).Body.Instructions
+  $call=$body | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq $pair[1]}
+  $guard=$body | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference] -and $_.Operand.Name -eq 'diagnosticsEnabled' -and $_.Next.OpCode.Name -like 'brfalse*' -and $_.Offset -lt $call.Offset -and $_.Next.Operand.Offset -gt $call.Offset}
+  if(!$call -or !$guard){throw "Developer-only render work must be guarded: $($pair -join '.')"}
+ }
+ $log=($renderer.Methods | Where-Object Name -eq 'LogFrameTiming').Body.Instructions
+ if(!($log | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference] -and $_.Operand.Name -eq 'lastDiagnosticLogMilliseconds'})){throw 'Log batch time must be reported separately from maintenance.'}
+ if(!($move | Where-Object {$_.OpCode.Name -eq 'ldc.r4' -and [float]$_.Operand -eq 30}) -or !($move | Where-Object {$_.OpCode.Name -eq 'ldc.r4' -and [float]$_.Operand -eq 5})){throw 'Normal and developer logging cadences must both remain available.'}
 } finally {$assembly.Dispose()}
 if($GameDir){
  $tmp=[Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $GameDir 'QV_Data/Managed/Unity.TextMeshPro.dll'))

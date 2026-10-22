@@ -13,3 +13,5 @@ if ($LASTEXITCODE -ne 0) { throw 'Shader clip tests did not compile.' }
 if ($CapturedShader) { $testArguments = @((Resolve-Path -LiteralPath $CapturedShader).Path) } else { $testArguments = @() }
 & $exe @testArguments | Select-String 'Diagnostic|Captured QV|Unused SV_Position|Create shader=|GPU clipping:|GPU feather|GPU caps|Depth-only prepass|Perspective clipping|constant-buffer diagnostic|validation passed|failed|GPU-copy variants'
 if ($LASTEXITCODE -ne 0) { throw 'Shader clip tests failed.' }
+& $exe '--no-diagnostics' | Select-String 'Diagnostic disabled|GPU clipping:|GPU feather|GPU caps|validation passed|failed'
+if ($LASTEXITCODE -ne 0) { throw 'Shader clip tests failed with production diagnostics disabled.' }

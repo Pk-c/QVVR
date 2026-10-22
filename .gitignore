@@ -52,3 +52,4 @@ docs/*
 !docs/architecture.md
 !docs/testing.md
 !docs/repository-safety.md
+!docs/release.md

@@ -8,6 +8,8 @@
     <RootNamespace>QVVR</RootNamespace>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <NuGetAudit>false</NuGetAudit>
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
     <ReferenceDir Condition="'$(ReferenceDir)' == ''">$(MSBuildProjectDirectory)\..\..\.deps\unity-reference</ReferenceDir>
     <BepInExDir Condition="'$(BepInExDir)' == ''">$(MSBuildProjectDirectory)\..\..\.deps\bepinex-5.4.23.5</BepInExDir>
     <OpenVrDir Condition="'$(OpenVrDir)' == ''">$(MSBuildProjectDirectory)\..\..\.deps\openvr-2.15.6</OpenVrDir>

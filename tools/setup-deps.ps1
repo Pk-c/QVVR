@@ -92,3 +92,4 @@ foreach ($assembly in $assemblies) {
 Write-Host "Dependencies ready under $deps"
 Write-Host "Unity compile references: $managedSource"
 & (Join-Path $PSScriptRoot 'setup-render-deps.ps1')
+& (Join-Path $PSScriptRoot 'setup-release-deps.ps1')

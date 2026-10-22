@@ -14,7 +14,7 @@ namespace QVVR
         internal ControllerBinding Primary, Secondary, Pause, Swap, Dash, Camera, Load;
         internal ControllerBinding MenuConfirm, MenuBack, PreviousPage, NextPage, VrMenu;
         internal ControllerStick MovementStick, DioramaStick, MenuStick;
-        internal float DioramaTurnSpeed, DioramaMoveSpeed;
+        internal float DioramaTurnSpeed, DioramaMoveSpeed, DioramaDeadZone;
         internal bool Exclusive;
     }
     internal static class ControllerButtonPolicy

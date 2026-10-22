@@ -26,6 +26,11 @@ git diff --cached --check
 .\tools\check-publication.ps1
 ```
 
+For a read-only preparation audit before staging, use
+`tools/check-publication.ps1 -Mode WorkingTree`. It covers tracked and unignored
+untracked public files without touching the index. The default still audits
+staged content only; working-tree success does not replace the final staged audit.
+
 The publication check audits staged content against a path/type allowlist and
 rejects common secret patterns, private e-mail/home paths, binary/control content
 and oversized files. Findings report filenames, never matched secret values.
@@ -35,5 +40,7 @@ Use a GitHub noreply identity for new commits when protecting author e-mail.
 Do not add dependencies/game files or generated packages to Git history, even
 temporarily. Ignoring them after a commit does not remove them from history.
 Do not force-push existing history or replace upstream licensing accidentally.
-Release packages, if published separately in the future, need their own licensing
-and content review; this source publication does not create a binary release.
+Release candidates have an exact file allowlist and archive audit, separate from
+the public source audit. Complete pinned third-party licenses and unmodified
+Doorstop source stay under ignored .deps until copied into the generated ZIP.
+See release.md. Preparing/verifying these artifacts does not publish a release.

@@ -1,0 +1,69 @@
+QVVR 0.1.0 - Experimental release candidate
+==========================================
+
+An unofficial VR mod for the Windows x64 Unity Mono edition of QV.
+Steam Frame: Windows build through Proton/FEX, with optional OpenXR passthrough.
+PCVR: OpenVR fallback with an opaque black or green exterior.
+
+Highlights
+- Portable PC-side Steam Frame USB install/update/uninstall menu with archive
+  validation, process checks, shared-loader protection and recoverable backups.
+- Local PC uninstall.bat now uses a guarded PowerShell uninstaller: settings and
+  other mods are kept by default, removed QVVR files are backed up.
+- Stereo cylindrical diorama with feathered edges and experimental black caps.
+- Two-hand move/resize/rotate and viewer-relative character movement.
+- Right stick: turn OR approach/retreat, with a 40% placement dead zone.
+- Separate gameplay/menu button bindings and portable controller-role presets.
+- Readable, centered dialogue HUD; stereo costume/map menus.
+- Compact 15-entry VR settings menu with reference Frame comfort defaults.
+- Restored cylinder toggle: Off enables full-scale stereo VR and right-stick
+  free-camera yaw/forward/back. Preserves diorama placement for switching back.
+- Shorter ordinary level-entry transition in independent VR (1.5 s vs 5.5 s).
+- Water foam compatibility trial for the white-water artifact seen from above.
+- Lightweight UI maintenance and opt-in developer diagnostics.
+- OpenVR pose prediction follows SteamVR cadence/vsync/display delay rather than
+  a fixed 72 Hz assumption; timing and input regression fixtures cover both APIs.
+
+Important limits
+- This candidate is not yet a stable or fully headset-validated release.
+- Full-world VR has no camera collisions, may cost more GPU than the diorama,
+  and still needs headset acceptance. Q movement and cinema/UI behavior remain.
+- The compact menu and shorter entry transition still need Frame acceptance.
+- Water foam suppression is experimental; it is not a proven general water fix.
+- Caps add GPU geometry work and can be incomplete on open/non-manifold meshes.
+- Preset input tests do not prove compatibility on every physical controller.
+- Quest 3 through Virtual Desktop and Steam Link still require separate hardware
+  acceptance. Intended PCVR route: SteamVR/OpenVR, Passthrough=false, opaque void;
+  direct VDXR and OpenComposite replacement DLLs are outside this candidate scope.
+- Scene-dependent performance and occasional diorama stutter remain possible.
+- OpenXR alpha blending requires runtime support; no dual OpenVR/OpenXR client.
+- No eye-depth submission, foveation or guaranteed stable 72 Hz.
+
+Installation and updates
+Close QV. Extract the archive CONTENTS beside QV.exe, not the enclosing ZIP.
+Back up existing mod files first. If BepInEx is shared with other mods, review
+loader/core replacements rather than overwriting an incompatible installation.
+For an update preserve BepInEx/config/dev.qvvr.prototype.cfg; do not replace
+custom settings with the supplied fresh-install template.
+Frame Steam launch options:
+  WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11
+Start the game yourself. Deployment never starts or terminates QV.
+
+Passthrough is opt-in: enable it in the menu/config and restart manually.
+Without a usable VR runtime, original desktop rendering remains available.
+
+Privacy and integrity
+No QV/Unity game assemblies, game assets, logs, device settings, dumps or symbols
+are included. The archive contains only an explicit runtime/document/license
+allowlist. qvvr-files.sha256 lists file hashes; the adjacent ZIP.sha256 checks
+the download. These are integrity hashes, not a digital publisher signature.
+qvvr-package.json identifies the source HEAD and whether local changes existed;
+a dirty candidate must not be represented as an exact tagged source build.
+
+Removal
+Close QV and run uninstall.bat on Windows, or manually remove only
+BepInEx/plugins/QVVR and BepInEx/config/dev.qvvr.prototype.cfg on SteamOS.
+Keep the config separately if you want to reuse your settings later. The removal
+helper leaves shared BepInEx, winhttp.dll and doorstop_config.ini in place.
+
+See README.txt and QVVR-THIRD-PARTY-NOTICES.txt for details and upstream sources.

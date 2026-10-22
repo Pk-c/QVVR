@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Runtime.InteropServices;
 using HarmonyLib;
 using UnityEngine;
@@ -40,11 +42,14 @@ namespace QVVR
         private bool uiActionLatch;
         private bool previousShoulderMode;
         private readonly GripGestureState gripGesture = new GripGestureState();
+        private readonly DioramaStickFilter dioramaStickFilter = new DioramaStickFilter();
         private OpenVrRenderer renderer;
         private static int movementQueryDepth;
         private static int uiQueryDepth;
+        private static int inactiveDialogDepth;
         private static bool movementUsesCameraYaw = true;
         private struct MovementScope { internal int Depth; internal bool CameraYaw; }
+        private struct DialogScope { internal int Depth, Inactive; }
         private bool IsMenuContext { get { return uiQueryDepth > 0 || !gameplayControls; } }
 
         internal bool BothGripsHeld { get { return gripGesture.Mode == 2; } }
@@ -96,9 +101,12 @@ namespace QVVR
                 {
                     string[] name = menus[i].Split(':'); Type type = AccessTools.TypeByName(name[0]);
                     MethodInfo method = type == null ? null : AccessTools.Method(type, name[1], Type.EmptyTypes);
-                    if (method != null) harmony.Patch(method,
-                        prefix: new HarmonyMethod(typeof(OpenVrInputBridge), "BeginUiQuery"),
-                        finalizer: new HarmonyMethod(typeof(OpenVrInputBridge), "EndUiQuery"));
+                    if (method == null) continue;
+                    bool dialog = name[0] == "DialogManager" || name[0] == "PrevDialogManager";
+                    harmony.Patch(method,
+                        prefix: new HarmonyMethod(typeof(OpenVrInputBridge), dialog ? "BeginDialogQuery" : "BeginUiQuery"),
+                        finalizer: new HarmonyMethod(typeof(OpenVrInputBridge), dialog ? "EndDialogQuery" : "EndUiQuery"),
+                        transpiler: dialog ? new HarmonyMethod(typeof(OpenVrInputBridge), "ReadDialogOpen") : null);
                 }
                 Type mover = AccessTools.TypeByName("CharacterMove");
                 if (mover != null)
@@ -153,6 +161,7 @@ namespace QVVR
             if (active != this || !plugin.VrEnabled.Value || !plugin.VrControllerInput.Value)
             {
                 gripGesture.Reset();
+                dioramaStickFilter.Reset();
                 hadFocus = false; previousStickChord = false;
                 ReleaseDeliveredActions();
                 return;
@@ -163,6 +172,7 @@ namespace QVVR
             {
                 hadFocus = false;
                 gripGesture.Reset();
+                dioramaStickFilter.Reset();
                 previousStickChord = false;
                 previous = 0;
                 ReleaseDeliveredActions();
@@ -183,12 +193,13 @@ namespace QVVR
             controllerInputAvailable = hasLeft || hasRight;
             if (!controllerInputAvailable)
             {
+                dioramaStickFilter.Reset();
                 hadFocus = false; previous = 0; previousStickChord = false;
                 gripGesture.Reset(); ReleaseDeliveredActions(); return;
             }
             uint currentBindingRevision;
             bindings = plugin.InputControls.Read(out currentBindingRevision);
-            if (bindingRevision != currentBindingRevision) suppressUntilNeutral = true;
+            if (bindingRevision != currentBindingRevision) { suppressUntilNeutral = true; dioramaStickFilter.Reset(); }
             bindingRevision = currentBindingRevision;
             bool leftGrip = hasLeft && ComfortMath.GripPressed(leftState.ulButtonPressed, leftState.rAxis2.x, leftState.rAxis2.y);
             bool rightGrip = hasRight && ComfortMath.GripPressed(rightState.ulButtonPressed, rightState.rAxis2.x, rightState.rAxis2.y);
@@ -211,8 +222,10 @@ namespace QVVR
             vertical = DeadZone(ControllerButtonPolicy.Stick(bindings.MovementStick, leftState.rAxis0.y, rightState.rAxis0.y));
             menuHorizontal = DeadZone(ControllerButtonPolicy.Stick(bindings.MenuStick, leftState.rAxis0.x, rightState.rAxis0.x));
             menuVertical = DeadZone(ControllerButtonPolicy.Stick(bindings.MenuStick, leftState.rAxis0.y, rightState.rAxis0.y));
-            dioramaHorizontal = DeadZone(ControllerButtonPolicy.Stick(bindings.DioramaStick, leftState.rAxis0.x, rightState.rAxis0.x));
-            dioramaVertical = DeadZone(ControllerButtonPolicy.Stick(bindings.DioramaStick, leftState.rAxis0.y, rightState.rAxis0.y));
+            Vector2 placementStick = dioramaStickFilter.Update(
+                ControllerButtonPolicy.Stick(bindings.DioramaStick, leftState.rAxis0.x, rightState.rAxis0.x),
+                ControllerButtonPolicy.Stick(bindings.DioramaStick, leftState.rAxis0.y, rightState.rAxis0.y), bindings.DioramaDeadZone);
+            dioramaHorizontal = placementStick.x; dioramaVertical = placementStick.y;
             if (horizontal > 0.5f) held |= Right;
             if (horizontal < -0.5f) held |= Left;
             if (vertical > 0.5f) held |= Up;
@@ -253,8 +266,9 @@ namespace QVVR
             if (suppressUntilNeutral && physical == 0 && horizontal == 0f && vertical == 0f &&
                 menuHorizontal == 0f && menuVertical == 0f && dioramaHorizontal == 0f && dioramaVertical == 0f)
                 suppressUntilNeutral = false;
-            if (physical == 0 && horizontal == 0f && vertical == 0f && menuHorizontal == 0f && menuVertical == 0f &&
-                dioramaHorizontal == 0f && dioramaVertical == 0f) uiActionLatch = false;
+            // A consumed confirm waits for BUTTON release, not for the walking
+            // stick to return to center. Otherwise holding movement can lock it.
+            if (physical == 0) uiActionLatch = false;
             if (settingsMenu != null && settingsMenu.Visible && !suppressUntilNeutral)
                 settingsMenu.HandleInput(menuHorizontal, menuVertical, (MenuState(1) & Confirm) != 0, (MenuState(1) & Back) != 0);
             if (menuWasVisible && !settingsMenu.Visible)
@@ -263,7 +277,11 @@ namespace QVVR
                 suppressUntilNeutral = true;
             }
             if (ConsumeGameInput) ReleaseDeliveredActions();
-            else deliveredActions &= held;
+            else
+            {
+                pendingReleases |= deliveredActions & ~held;
+                deliveredActions &= held;
+            }
             if (held != 0 && !loggedInput)
             {
                 loggedInput = true;
@@ -290,6 +308,7 @@ namespace QVVR
         {
             OpenVrInputBridge input = active;
             if (input == null || !input.controllerInputAvailable) return;
+            if (inactiveDialogDepth > 0) { __result = 0f; return; }
             if (input.ConsumeGameInput) { __result = 0f; return; }
             float value;
             bool vrMovement = false;
@@ -332,6 +351,38 @@ namespace QVVR
         { movementQueryDepth = __state.Depth; movementUsesCameraYaw = __state.CameraYaw; }
         private static void BeginUiQuery(out int __state) { __state = uiQueryDepth; uiQueryDepth++; }
         private static void EndUiQuery(int __state) { uiQueryDepth = __state; }
+        private static void BeginDialogQuery(out DialogScope __state)
+        {
+            __state = new DialogScope { Depth = uiQueryDepth, Inactive = inactiveDialogDepth };
+            uiQueryDepth++;
+        }
+        private static void DialogOpen(bool open) { if (!open) inactiveDialogDepth++; }
+        private static void EndDialogQuery(DialogScope __state)
+        { uiQueryDepth = __state.Depth; inactiveDialogDepth = __state.Inactive; }
+
+        // Cold patching only. Read the game's real bool/ObscuredBool IsOpen
+        // without reflection, boxing or a visibility/discovery delay per query.
+        private static IEnumerable<CodeInstruction> ReadDialogOpen(IEnumerable<CodeInstruction> instructions, MethodBase __originalMethod)
+        {
+            MethodInfo getter = AccessTools.Method(__originalMethod.DeclaringType, "get_IsOpen", Type.EmptyTypes);
+            if (getter == null) throw new MissingMethodException("Dialogue IsOpen getter unavailable.");
+            yield return new CodeInstruction(OpCodes.Ldarg_0);
+            yield return new CodeInstruction(OpCodes.Callvirt, getter);
+            if (getter.ReturnType != typeof(bool))
+            {
+                MethodInfo conversion = null;
+                foreach (MethodInfo candidate in getter.ReturnType.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                {
+                    if (candidate.Name != "op_Implicit" || candidate.ReturnType != typeof(bool)) continue;
+                    ParameterInfo[] parameters = candidate.GetParameters();
+                    if (parameters.Length == 1 && parameters[0].ParameterType == getter.ReturnType) { conversion = candidate; break; }
+                }
+                if (conversion == null) throw new MissingMethodException("Dialogue IsOpen bool conversion unavailable.");
+                yield return new CodeInstruction(OpCodes.Call, conversion);
+            }
+            yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(OpenVrInputBridge), "DialogOpen"));
+            foreach (CodeInstruction instruction in instructions) yield return instruction;
+        }
 
         private static void Button(string __0, ref bool __result) { Add(__0, false, 0, ref __result); }
         private static void ButtonDown(string __0, ref bool __result) { Add(__0, false, 1, ref __result); }
@@ -354,6 +405,7 @@ namespace QVVR
                 if (edge == 2) result |= input.Released(mask);
                 return;
             }
+            if (inactiveDialogDepth > 0) { if (ControllerButtonPolicy.Known(action)) result = false; return; }
             if (input.ConsumeGameInput)
             {
                 input.ReleaseDeliveredActions();
@@ -366,7 +418,7 @@ namespace QVVR
                 if (edge == 2) value |= input.Released(mask);
                 // A dialog/resume button must not become a held game action in
                 // a later Update on this or the next frame. UI queries still
-                // see the same edge; only gameplay waits for neutral input.
+                // see the same edge; only gameplay waits for button release.
                 if (value && edge == 1 && input.IsMenuContext && input.gameplayControls && (mask & ~15u) != 0)
                 { input.uiActionLatch = true; input.ReleaseDeliveredActions(); }
                 if (!input.IsMenuContext && value)
@@ -389,6 +441,7 @@ namespace QVVR
         {
             OpenVrInputBridge input = active;
             if (input == null || !input.controllerInputAvailable) return;
+            if (inactiveDialogDepth > 0) { result = false; return; }
             if (input.ConsumeGameInput) result = false;
             else
             {
@@ -452,8 +505,10 @@ namespace QVVR
             deliveredActions = pendingReleases = acknowledgedReleases = 0;
             physicalHeld = previousPhysicalHeld = 0;
             controllerInputAvailable = false;
+            dioramaStickFilter.Reset();
             movementQueryDepth = 0;
             uiQueryDepth = 0;
+            inactiveDialogDepth = 0;
             movementUsesCameraYaw = true;
             RequireGripRelease();
             if (harmony != null)

@@ -14,7 +14,7 @@ namespace QVVR
         private readonly ConfigEntry<ControllerBinding> primary, secondary, pause, swap, dash, camera, load;
         private readonly ConfigEntry<ControllerBinding> confirm, back, previousPage, nextPage, vrMenu;
         private readonly ConfigEntry<ControllerStick> movementStick, dioramaStick, menuStick;
-        private readonly ConfigEntry<float> dioramaTurnSpeed, dioramaMoveSpeed;
+        private readonly ConfigEntry<float> dioramaTurnSpeed, dioramaMoveSpeed, dioramaDeadZone;
         private readonly ConfigEntry<bool> exclusive;
         internal ControllerBindings Bindings { get { lock (snapshotLock) return snapshot; } }
         internal ControllerBindings Read(out uint currentRevision)
@@ -37,9 +37,10 @@ namespace QVVR
             nextPage = Bind("NextPage", "Menu R/page action. Default: right trigger; wands: None.");
             vrMenu = Bind("VrSettings", "Toggle QVVR settings. Default: both stick clicks; wands: right trackpad click. Grips remain reserved for the diorama.");
             movementStick = file.Bind("Input", "MovementStick", ControllerStick.Left, "Character locomotion: Left, Right, Either or None. Default Left prevents camera input from moving the character too.");
-            dioramaStick = file.Bind("Input", "DioramaStick", ControllerStick.Right, "Diorama placement: horizontal turns about its center; forward brings it closer, backward moves it away. Left, Right, Either or None. Game camera axes are disabled in VR.");
-            dioramaTurnSpeed = file.Bind("Input", "DioramaStickTurnDegreesPerSecond", 60f, "Full-deflection diorama yaw speed in degrees per second (0-180).");
-            dioramaMoveSpeed = file.Bind("Input", "DioramaStickMoveMetersPerSecond", 0.6f, "Full-deflection diorama approach/retreat speed in physical meters per second (0-3). Height and size are preserved.");
+            dioramaStick = file.Bind("Input", "DioramaStick", ControllerStick.Right, "Diorama: horizontal turns about its center, forward/back brings it closer/further. With Diorama.Enabled=false: horizontal turns the full-scale VR camera about the head; forward/back moves along upright viewing direction. Left, Right, Either or None. Original game camera axes are disabled in VR.");
+            dioramaTurnSpeed = file.Bind("Input", "DioramaStickTurnDegreesPerSecond", 60f, "Full-deflection yaw speed for diorama or full-scale VR camera, degrees per second (0-180).");
+            dioramaMoveSpeed = file.Bind("Input", "DioramaStickMoveMetersPerSecond", 0.6f, "Full-deflection diorama approach/retreat or full-scale camera forward/back speed, physical meters per second (0-3). Height and size are preserved.");
+            dioramaDeadZone = file.Bind("Input", "DioramaStickDeadZone", 0.4f, "Diorama/free-camera stick dead zone (0.1-0.8). Output ramps smoothly outside it. Dominant-axis hysteresis separates turning from forward/back; menu and character locomotion sticks are unchanged.");
             menuStick = file.Bind("Input", "MenuStick", ControllerStick.Either, "Menu/settings navigation source, independent of locomotion.");
             exclusive = file.Bind("Input", "ExclusiveVrControls", true,
                 "While VR controllers are available and focused, replace recognized QV actions instead of adding Steam Input's mirrored gamepad. Unknown actions and desktop/no-controller fallback stay untouched. False allows mixed keyboard/gamepad input.");
@@ -57,7 +58,8 @@ namespace QVVR
                 MenuConfirm = confirm.Value, MenuBack = back.Value, PreviousPage = previousPage.Value,
                 NextPage = nextPage.Value, VrMenu = vrMenu.Value, MovementStick = movementStick.Value,
                 DioramaStick = dioramaStick.Value, DioramaTurnSpeed = dioramaTurnSpeed.Value,
-                DioramaMoveSpeed = dioramaMoveSpeed.Value, MenuStick = menuStick.Value, Exclusive = exclusive.Value });
+                DioramaMoveSpeed = dioramaMoveSpeed.Value, DioramaDeadZone = dioramaDeadZone.Value,
+                MenuStick = menuStick.Value, Exclusive = exclusive.Value });
             lock (snapshotLock) { snapshot = next; revision++; }
         }
         public void Dispose() { file.SettingChanged -= OnSettingChanged; }

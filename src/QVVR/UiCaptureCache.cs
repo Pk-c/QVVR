@@ -26,6 +26,11 @@ namespace QVVR
         private readonly List<UiMaterialWatch> materialWatches = new List<UiMaterialWatch>(128);
         private readonly Dictionary<Graphic, UiMaterialWatch> cachedMaterialWatches = new Dictionary<Graphic, UiMaterialWatch>();
         private readonly List<Graphic> expiredMaterialWatches = new List<Graphic>(16);
+        private readonly Dictionary<Graphic, int> subscriptions = new Dictionary<Graphic, int>();
+        private readonly List<Graphic> expiredSubscriptions = new List<Graphic>(16);
+        private int scan;
+        private bool suspended;
+        private float nextProbe;
         private readonly List<Color> graphicColors = new List<Color>(128);
         private readonly List<Canvas> canvases = new List<Canvas>(16);
         private readonly List<bool> canvasEnabled = new List<bool>(16);
@@ -43,11 +48,15 @@ namespace QVVR
         internal ulong Captures { get; private set; }
         internal ulong Reuses { get; private set; }
         internal int ContinuousReason { get; private set; } // 0=static, 1=failed, 2=material, 3=Animator.
+        internal bool Suspended { get { return suspended; } }
         internal UiCaptureCache() { invalidate = Invalidate; }
         internal void Invalidate() { dirty = true; }
         internal void BeginScan()
+        { BeginScan(false); }
+        private void BeginScan(bool incremental)
         {
-            Unwatch();
+            if (incremental) ClearSnapshots(); else Unwatch();
+            scan++;
             // Retain cold-bound TMP delegates across the regular maintenance
             // scan. Destroyed popup widgets must not retain their bound targets.
             expiredMaterialWatches.Clear();
@@ -55,6 +64,36 @@ namespace QVVR
                 if (pair.Key == null) expiredMaterialWatches.Add(pair.Key);
             for (int i = 0; i < expiredMaterialWatches.Count; i++) cachedMaterialWatches.Remove(expiredMaterialWatches[i]);
             expiredMaterialWatches.Clear();
+        }
+        // Cold maintenance only. Continuous/unknown UI must still render at the
+        // original cadence, but does not need snapshots or dirty subscriptions.
+        internal bool BeginMaintenance(float now, bool enabled, bool lightweight)
+        {
+            if (!enabled || Failed)
+            {
+                Unwatch(); suspended = true; nextProbe = 0f;
+                ContinuousReason = Failed ? 1 : 0;
+                return false;
+            }
+            if (lightweight && suspended && now < nextProbe) return false;
+            suspended = false;
+            BeginScan(lightweight);
+            return true;
+        }
+        internal void EndMaintenance(float now, bool lightweight)
+        {
+            expiredSubscriptions.Clear();
+            foreach (KeyValuePair<Graphic, int> pair in subscriptions)
+                if (pair.Key == null || pair.Value != scan) expiredSubscriptions.Add(pair.Key);
+            for (int i = 0; i < expiredSubscriptions.Count; i++)
+            {
+                Graphic graphic = expiredSubscriptions[i]; Unsubscribe(graphic); subscriptions.Remove(graphic);
+            }
+            expiredSubscriptions.Clear();
+            if (lightweight && Continuous())
+            {
+                Unwatch(); suspended = true; nextProbe = now + 2f;
+            }
         }
         internal void Watch(Canvas canvas)
         {
@@ -76,13 +115,20 @@ namespace QVVR
             for (int i = 0; i < foundGraphics.Count; i++)
             {
                 Graphic graphic = foundGraphics[i];
-                if (graphic == null || graphics.Contains(graphic)) continue;
+                if (graphic == null) continue;
+                int seen;
+                bool subscribed = subscriptions.TryGetValue(graphic, out seen);
+                if (subscribed && seen == scan) continue;
                 graphics.Add(graphic);
                 graphicEnabled.Add(graphic.enabled);
                 graphicColors.Add(graphic.canvasRenderer.GetColor());
-                graphic.RegisterDirtyVerticesCallback(invalidate);
-                graphic.RegisterDirtyMaterialCallback(invalidate);
-                graphic.RegisterDirtyLayoutCallback(invalidate);
+                if (!subscribed)
+                {
+                    graphic.RegisterDirtyVerticesCallback(invalidate);
+                    graphic.RegisterDirtyMaterialCallback(invalidate);
+                    graphic.RegisterDirtyLayoutCallback(invalidate);
+                }
+                subscriptions[graphic] = scan;
                 // Graphic.material is VIRTUAL. TMP_SubMeshUI's getter can
                 // instantiate a material (or throw while an inactive submesh
                 // has no source). Never call third-party material getters.
@@ -119,7 +165,7 @@ namespace QVVR
         }
         internal bool NeedsCapture()
         {
-            if (dirty || Continuous()) return true;
+            if (suspended || dirty || Continuous()) return true;
             for (int i = 0; i < graphics.Count; i++)
                 if (graphics[i] == null || graphics[i].enabled != graphicEnabled[i] || graphics[i].canvasRenderer.GetColor() != graphicColors[i]) return true;
             for (int i = 0; i < canvases.Count; i++) if (canvases[i] == null || canvases[i].enabled != canvasEnabled[i]) return true;
@@ -165,7 +211,7 @@ namespace QVVR
             Captures++;
             // Animated/custom UI already keeps its original refresh rate. Do
             // not also walk every widget to build an unused static snapshot.
-            if (Continuous()) { dirty = true; return; }
+            if (suspended || Continuous()) { dirty = true; return; }
             for (int i = 0; i < graphics.Count; i++) if (graphics[i] != null)
             {
                 graphicEnabled[i] = graphics[i].enabled;
@@ -188,18 +234,23 @@ namespace QVVR
         }
         private void Unwatch()
         {
-            for (int i = 0; i < graphics.Count; i++)
-            {
-                Graphic graphic = graphics[i];
-                if (graphic == null) continue;
-                graphic.UnregisterDirtyVerticesCallback(invalidate);
-                graphic.UnregisterDirtyMaterialCallback(invalidate);
-                graphic.UnregisterDirtyLayoutCallback(invalidate);
-            }
+            foreach (KeyValuePair<Graphic, int> pair in subscriptions) Unsubscribe(pair.Key);
+            subscriptions.Clear();
+            ClearSnapshots();
+        }
+        private void Unsubscribe(Graphic graphic)
+        {
+            if (graphic == null) return;
+            graphic.UnregisterDirtyVerticesCallback(invalidate);
+            graphic.UnregisterDirtyMaterialCallback(invalidate);
+            graphic.UnregisterDirtyLayoutCallback(invalidate);
+        }
+        private void ClearSnapshots()
+        {
             graphics.Clear(); graphicEnabled.Clear(); graphicBuiltIn.Clear(); materialWatches.Clear(); graphicColors.Clear();
             canvases.Clear(); canvasEnabled.Clear(); poses.Clear(); groups.Clear(); animators.Clear(); dirty = true;
         }
-        internal void Clear() { Unwatch(); cachedMaterialWatches.Clear(); expiredMaterialWatches.Clear(); }
+        internal void Clear() { Unwatch(); cachedMaterialWatches.Clear(); expiredMaterialWatches.Clear(); expiredSubscriptions.Clear(); suspended = false; nextProbe = 0f; }
         // A cache is optional, scene/controller preparation is not. Keep this
         // circuit breaker for the session, including across maintenance scans.
         internal void DisableReuse() { Failed = true; Clear(); }

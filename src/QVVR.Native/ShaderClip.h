@@ -15,6 +15,11 @@ struct ClipParameters
 bool PatchCylinderShader(const void *bytes, size_t length, std::vector<std::uint8_t> &output, unsigned &bufferSlot,
                          bool opaque = false, bool premultiplied = false);
 bool InstallShaderClip(ID3D11Device *device);
+// Startup-only configuration, before shader interception/resources are installed.
+void ConfigureShaderDiagnostics(bool enabled);
+#ifdef QVVR_CLIP_TEST
+void ShaderDiagnosticTestStats(unsigned &buffers, unsigned &shaders);
+#endif
 void SetShaderClipTargets(ID3D11Texture2D *left, ID3D11Texture2D *right);
 void BeginShaderClip(const ClipParameters &parameters, bool caps = false, bool reversedZ = false, bool transparent = false, const CapCullVolume *cull = nullptr, const CapSkipFrame *skip = nullptr);
 void EndShaderClip();

@@ -1,4 +1,4 @@
-QVVR 0.1.0 - Experimental VR mod
+QVVR 0.1.0 - Experimental release candidate
 ================================
 
 Hub/costume/map screens in 001_Intro can render in full stereo without diorama
@@ -7,7 +7,8 @@ menus in settings to test it or recover flat capture if framing/transitions fail
 Their UI shares gameplay HUD size, distance, upright follow and capture rate.
 Exception: only the stereo costume-access hub uses HUD scale 4. Distances and
 the saved normal HUD scale for maps/costume selection/gameplay stay unchanged.
-The stereo selection option is off by default until Frame measurement/testing.
+Stereo selections are enabled in the reference Frame profile; config false
+restores flat recovery. Other hardware still needs framing/performance checks.
 Costume-access hub VR distance retains 35% of original forward depth; set
 VR.IntroHubDistanceScale=1 to restore it. Costume/map cameras stay unchanged.
 The map LobbyDim is hidden only during stereo eye/UI capture; other fades remain.
@@ -22,16 +23,34 @@ Saved X/Y, size, rotation and intentionally distant placement are preserved.
 Two-hand placement sensitivity: translation 1.15x, rotation 1.10x. Resize and
 head tracking are unchanged. LiquidDepthFix adds fresh per-eye depth only for
 known active liquid shaders; verify water/ink on the headset.
-Black cut surfaces (experimental) is an opt-in settings-menu stencil cap mode.
-It is off by default until Frame correctness/performance testing. Open meshes
+WaterFoamFix=true experimentally removes the common blue-water material's white
+foam during gameplay stereo only, retaining its surface/depth colors and restoring
+the live material afterward. Ink/fog/desktop are unchanged. Set false for A/B.
+No extra render pass or texture; the visual result needs Frame validation.
+Black cut surfaces (experimental) is enabled in the reference Frame profile.
+Set Diorama.BlackCutSurfaces=false in the config to disable it. Open meshes
 and incomplete native batch registration can limit coverage; extra GPU work.
 
-Install the locally built archive beside QV.exe. Close QV before deployment;
+Extract the archive CONTENTS beside QV.exe. Close QV before deployment;
 start it manually afterward. Preserve BepInEx/config/dev.qvvr.prototype.cfg
 when updating manually. USB/SSH deployment preserves it automatically.
+Back up the overlay first; review loader/core files if other mods share BepInEx.
+See RELEASE-NOTES.txt for known limits, candidate status and pending Frame checks.
+LICENSE.txt and BepInEx/plugins/QVVR/licenses contain the full license texts.
+qvvr-files.sha256 lists payload hashes; the adjacent ZIP.sha256 verifies download
+integrity, not publisher identity. No game assemblies/assets or user logs/config
+are bundled; the supplied config is a clean fresh-install reference template.
 
 Steam launch options for the Windows build on Steam Frame:
   WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11
+
+Native Windows PCVR (Steam Link / Virtual Desktop): use -force-d3d11, not the
+Proton WINEDLLOVERRIDES prefix. Connect the headset/controllers in SteamVR first,
+keep Diorama.Passthrough=false and Input.Layout=FaceButtons for Touch-style roles,
+then start QV manually. This candidate uses OpenVR through SteamVR, not direct
+VDXR or an OpenComposite replacement DLL. Opaque black/green exterior is expected.
+Prediction follows the runtime cadence/display delay/vsync instead of assuming
+72 Hz. Quest 3 + Virtual Desktop and Steam Link hardware validation is pending.
 
 Controls:
   F7: recenter. F8: toggle VR/desktop.
@@ -41,10 +60,28 @@ Controls:
   Menu triggers: previous/next page, not confirm. A confirms menus/dialogs.
   Left stick: viewer-relative movement. Right stick: horizontal rotates the
   diorama about its center; forward brings it closer, backward moves it away.
+  Cylinder Off: right stick turns the full-scale camera in place and moves it
+  forward/back along your upright viewing direction. Left stick still moves Q.
   Height and size stay unchanged. Menus retain stick navigation.
   [Input] DioramaStick selects the placement stick (default Right);
   DioramaStickTurnDegreesPerSecond=60, DioramaStickMoveMetersPerSecond=0.6.
+  DioramaStickDeadZone=0.4: 40% placement dead zone with smooth onset. Dominant-axis
+  hysteresis prevents small diagonal turn input from also moving the diorama.
+  Closed dialogue queries no longer consume gameplay A. UI-confirm suppression
+  ends on button release without recentering the walking stick; delayed held-action
+  releases remain available when the game resumes polling.
   The old CameraStick setting is ignored; game secondary camera axes are disabled.
+  Dialogue boxes are centered in the viewer-following VR HUD; portraits and text
+  animation are preserved. [Comfort] CenterDialogs=false restores the original
+  layout. Desktop and fixed flat cinematics are unaffected. No extra render pass.
+  Comfort.LevelEntrySeconds=1.5 shortens the ordinary pre-dialogue entry fade in
+  independent diorama VR (range 1.5-5.5; 5.5 restores native timing). Original
+  callbacks still start dialogue/tutorials/controls. Story movies and desktop
+  retain their timing; applies at the next entry, not to an active transition.
+  Performance.LightweightUiMaintenance=true avoids repeated HUD subscriptions;
+  continuous UI keeps full capture rate with a cache recovery probe every 2 s.
+  Performance.DiagnosticsEnabled=false uses concise 30 s performance summaries
+  without shader dumps. True restores developer diagnostics after manual restart.
   Both stick clicks: open/close QVVR settings.
   Layout=TrackpadWands: right trigger primary/confirm, right application-menu
   secondary/back, left application-menu pause, left pad click swap, left trigger
@@ -60,8 +97,23 @@ Controls:
   Both grips: natural translation, hand-separation size, hand/wrist rotation.
   Release either grip to retain the pose. Right grip alone does not manipulate.
   The settings menu does not pause game simulation.
+  Compact menu: tilt, render profile, recenter, restore comfort defaults, cylinder on/off,
+  radius/height/center height, void color, passthrough, edge fade, clouds, place in
+  front, diorama size, XR eye-scale cap (15 rows). Other settings remain in config.
+  Reference defaults: tilt -16 degrees, flat panel 1.8 m wide / 1.5 m away /
+  0.6 s follow lag. Existing saved config is preserved; defaults apply to fresh
+  configs and the explicit restore-comfort action, never merely opening the menu.
 
 Diorama:
+  Cylindrical diorama Off enables experimental full-world VR at 1 game unit/m.
+  The camera starts 3 units behind Q, 1.6 units above the player root; follows Q
+  but not the animated game camera. Right stick: turn / move forward or back.
+  Recenter or Reset camera behind Q restores the starting framing. No camera
+  collisions: you can move into geometry. Whole-level rendering may cost more GPU.
+  No cylinder/caps/outside-cylinder culling, including with OpenXR passthrough
+  enabled. Original game background is restored. Two-grip gestures are inactive.
+  Diorama size/placement are preserved for switching back. Cinemas/menus unchanged.
+  This new mode still needs headset acceptance on Frame and PCVR.
   Game fragments are clipped to a cylinder; HUD/menu panels are separate.
   Default radius/height: 12 original game units.
   Diorama size supports 0.001-10 times base size.
@@ -72,15 +124,15 @@ Diorama:
   Character movement/jump inputs follow viewer heading and diorama rotation.
   2D panels remain upright. The open settings panel stays physically anchored.
   Cylinder edge fade defaults to 1 game unit; zero restores hard clipping.
-  Gameplay/stereo intro HUD size defaults to 2x, distance to 2.8 m.
-  HUD center inset: 12% per edge, adjustable 0-45% without scaling text.
+  Gameplay/stereo intro HUD size defaults to 1.8x, distance to 1.4 m (config-only).
+  HUD center inset: 29% per edge, config range 0-45% without scaling text.
   Zero restores original anchors; title/flat recovery remains unchanged.
   First-level opening Timeline: flat panel, then automatic stereo restoration
   after completion/skip. Grips are disabled during intro; game controls remain.
   The movie screen stays fixed in physical space; recenter places it in front.
   New Game Opening/Opening2 use the same fixed screen, not their animated camera.
   Hub pause/options/achievements UI alone uses scale 2 and its own live distance:
-  Hub pause/achievements distance, default 1.2 m, adjustable 0.6-3 m.
+  Comfort.HubPauseDistanceMeters defaults to 1.2 m, config range 0.6-3 m.
   Map selection: Cloud.Panel's original fade tween drives a full-eye VR fade,
   including HUD and passthrough, through Loading and gameplay fade-in. The 2D
   rectangle is hidden only for capture, with original game state restored.
@@ -129,5 +181,12 @@ Diagnostics:
   Do not publish raw diagnostics, saved configurations or game assets.
 
 Uninstall:
-  Close QV, then run uninstall.bat from the installed overlay.
-  It removes only the owned QVVR plugin/configuration, not shared loader files.
+  PC: close QV, double-click uninstall.bat beside QV.exe and type UNINSTALL.
+  QVVR is moved into .qvvr-backups for recovery; settings are kept by default.
+  BepInEx, winhttp.dll, doorstop_config.ini, game files and other mods are kept.
+  Optional: powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -RemoveConfig
+  also backs up/removes settings. Add -WhatIf for a non-mutating preview.
+  Frame from PC: use the separate QVVR-Frame-Setup.zip USB manager, extracted
+  beside the mod ZIP. Run its .bat and choose install/update or uninstall.
+  Needs authorized USB debugging and Android SDK Platform Tools (not bundled).
+  Existing settings are preserved; incompatible shared loader files are refused.

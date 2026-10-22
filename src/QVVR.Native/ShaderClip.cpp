@@ -509,6 +509,7 @@ struct DiagnosticBytecode { std::vector<std::uint8_t> original, clipped, opaque,
 // copied in HookSet. Never copy a vector in the per-draw render path.
 std::unordered_map<ID3D11PixelShader *, DiagnosticBytecode> diagnosticShaders;
 ID3D11DeviceContext *context = nullptr;
+bool diagnosticEnabled = false;
 ID3D11DeviceContext1 *diagnosticContext = nullptr;
 ID3D11Buffer *clipBuffer = nullptr;
 ID3D11PixelShader *discardShader = nullptr;
@@ -743,17 +744,20 @@ HRESULT STDMETHODCALLTYPE HookCreate(ID3D11Device *device, const void *bytes, SI
         DiagnosticBytecode capture;
         bool supported = !linkage && PatchCylinderShader(bytes, size, code, v.slot) &&
             SUCCEEDED(originalCreate(device, code.data(), code.size(), nullptr, &v.shader));
-        if (supported) capture.clipped = code;
+        if (supported && diagnosticEnabled) capture.clipped = code;
         supported = supported && PatchCylinderShader(bytes, size, code, v.slot, true) &&
             SUCCEEDED(originalCreate(device, code.data(), code.size(), nullptr, &v.opaque));
-        if (supported) capture.opaque = code;
+        if (supported && diagnosticEnabled) capture.opaque = code;
         supported = supported && PatchCylinderShader(bytes, size, code, v.slot, false, true) &&
             SUCCEEDED(originalCreate(device, code.data(), code.size(), nullptr, &v.premultiplied));
         if (supported)
         {
-            capture.premultiplied = std::move(code);
-            auto start = static_cast<const std::uint8_t *>(bytes);
-            capture.original.assign(start, start + size);
+            if (diagnosticEnabled)
+            {
+                capture.premultiplied = std::move(code);
+                auto start = static_cast<const std::uint8_t *>(bytes);
+                capture.original.assign(start, start + size);
+            }
             ++patchedCount;
         }
         else
@@ -767,7 +771,7 @@ HRESULT STDMETHODCALLTYPE HookCreate(ID3D11Device *device, const void *bytes, SI
         }
         // Keep original alive until process shutdown, preventing pointer reuse.
         std::lock_guard<std::mutex> lock(variantMutex);
-        if (supported) diagnosticShaders.emplace(*shader, std::move(capture));
+        if (supported && diagnosticEnabled) diagnosticShaders.emplace(*shader, std::move(capture));
         if (variants.emplace(*shader, v).second)
             (*shader)->AddRef();
         else
@@ -982,7 +986,7 @@ bool InstallShaderClip(ID3D11Device *device)
     // are created before shader interception and never enter game variants.
     cylinderCaps.Initialize(device);
     device->GetImmediateContext(&context);
-    context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void **>(&diagnosticContext));
+    if (diagnosticEnabled) context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void **>(&diagnosticContext));
     D3D11_BUFFER_DESC desc = {};
     desc.ByteWidth = sizeof(ClipParameters);
     desc.Usage = D3D11_USAGE_DEFAULT;
@@ -994,10 +998,10 @@ bool InstallShaderClip(ID3D11Device *device)
     staging.ByteWidth = DiagnosticBytes;
     staging.Usage = D3D11_USAGE_STAGING;
     staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    bool diagnosticAvailable = true;
-    for (auto &buffer : diagnosticStaging)
+    bool diagnosticAvailable = diagnosticEnabled;
+    if (diagnosticEnabled) for (auto &buffer : diagnosticStaging)
         if (FAILED(device->CreateBuffer(&staging, nullptr, &buffer))) diagnosticAvailable = false;
-    if (FAILED(device->CreateBuffer(&staging, nullptr, &diagnosticPixelStaging))) diagnosticAvailable = false;
+    if (diagnosticEnabled && FAILED(device->CreateBuffer(&staging, nullptr, &diagnosticPixelStaging))) diagnosticAvailable = false;
     D3D11_QUERY_DESC query = {D3D11_QUERY_EVENT, 0};
     if (diagnosticAvailable) device->CreateQuery(&query, &diagnosticQuery);
     const char *source = "float4 main():SV_Target{clip(-1);return 0;}";
@@ -1060,13 +1064,22 @@ void CompositeShaderCaps()
 void GetCapStats(unsigned &available, unsigned &registered, unsigned &replayed, unsigned &composed)
 { cylinderCaps.Stats(available, registered, replayed, composed); }
 void GetCapCullStats(unsigned &bounded, unsigned &skipped) { cylinderCaps.CullStats(bounded, skipped); }
+void ConfigureShaderDiagnostics(bool enabled) { if (!context) diagnosticEnabled = enabled; }
+#ifdef QVVR_CLIP_TEST
+void ShaderDiagnosticTestStats(unsigned &buffers, unsigned &shaders)
+{
+    buffers = diagnosticPixelStaging ? 1u : 0u;
+    for (auto buffer : diagnosticStaging) if (buffer) ++buffers;
+    shaders = static_cast<unsigned>(diagnosticShaders.size());
+}
+#endif
 void BeginShaderClip(const ClipParameters &parameters, bool caps, bool reversedZ, bool transparent, const CapCullVolume *cull, const CapSkipFrame *skip)
 {
     if (!context || clipping)
         return;
     cylinderCaps.Begin(parameters, caps, reversedZ, transparent, cull, skip);
-    CollectWorldConstants();
-    diagnosticArmed = diagnosticQuery && !diagnosticCaptured && parameters.limits[0] > 4.f && parameters.limits[0] < 1e20f;
+    if (diagnosticEnabled) CollectWorldConstants();
+    diagnosticArmed = diagnosticEnabled && diagnosticQuery && !diagnosticCaptured && parameters.limits[0] > 4.f && parameters.limits[0] < 1e20f;
     if (diagnosticArmed) diagnostic.parameters = parameters;
     savedClassCount = 256;
     context->PSGetShader(&savedShader, savedClasses, &savedClassCount);
@@ -1084,7 +1097,7 @@ void BeginShaderClip(const ClipParameters &parameters, bool caps, bool reversedZ
 }
 bool WriteShaderClipDiagnostic(const wchar_t *path)
 {
-    if (!path || !diagnosticReady.load(std::memory_order_acquire)) return false;
+    if (!diagnosticEnabled || !path || !diagnosticReady.load(std::memory_order_acquire)) return false;
     FILE *file = nullptr;
     if (_wfopen_s(&file, path, L"wb") != 0 || !file) return false;
     bool success = fwrite(&diagnostic, sizeof(diagnostic), 1, file) == 1;

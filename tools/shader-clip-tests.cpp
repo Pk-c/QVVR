@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <d3dcompiler.h>
 static std::atomic<bool> trackAllocations(false);
+static bool enableDiagnosticCapture = true;
 static std::atomic<unsigned> hotAllocations(0);
 void *operator new(std::size_t size) {
     if (trackAllocations.load()) hotAllocations.fetch_add(1);
@@ -67,6 +68,7 @@ static void CheckUnusedPositionSignature(ID3DBlob *original)
 static void RenderTest(ID3D11Device *device, ID3D11DeviceContext *context)
 {
     // Synthetic WARP test targets only, never headset/game eye textures.
+    qvvr::ConfigureShaderDiagnostics(enableDiagnosticCapture);
     assert(qvvr::InstallShaderClip(device));
     D3D11_TEXTURE2D_DESC td = {};
     td.Width = td.Height = 32;
@@ -364,6 +366,8 @@ static void RenderTest(ID3D11Device *device, ID3D11DeviceContext *context)
         code->Release();
     }
     context->Flush();
+    if (enableDiagnosticCapture)
+    {
     bool diagnosticWritten = false;
     for (int attempt = 0; attempt < 1000 && !diagnosticWritten; ++attempt)
     {
@@ -389,6 +393,15 @@ static void RenderTest(ID3D11Device *device, ID3D11DeviceContext *context)
     assert(actualPixelParameters.limits[0] == 14.5f * 14.5f && actualPixelParameters.limits[1] == 5.25f);
     fclose(diagnosticFile);
     puts("GPU constant-buffer diagnostic: active VS data captured; no eye texture readback.");
+    }
+    else
+    {
+        unsigned buffers = 0, shaders = 0;
+        qvvr::ShaderDiagnosticTestStats(buffers, shaders);
+        assert(buffers == 0 && shaders == 0);
+        assert(!qvvr::WriteShaderClipDiagnostic(L"artifacts/shader-clip-tests/disabled.bin"));
+        puts("Diagnostic disabled: zero staging buffers, zero retained diagnostic shader bytecodes; clipping unchanged.");
+    }
     ID3D11Buffer *noBuffer = nullptr;
     context->VSSetConstantBuffers(0, 1, &noBuffer);
     diagnosticBuffer->Release();
@@ -748,12 +761,13 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
 }
 int main(int argc, char **argv)
 {
+    enableDiagnosticCapture = !(argc > 1 && strcmp(argv[1], "--no-diagnostics") == 0);
     setvbuf(stdout, nullptr, _IONBF, 0);
     ID3D11Device *device = nullptr;
     ID3D11DeviceContext *context = nullptr;
     assert(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
                                        &device, nullptr, &context)));
-    if (argc > 1)
+    if (argc > 1 && enableDiagnosticCapture)
     {
         // Optional uncommitted artifact from the real Frame diagnostic. Never
         // ship or commit captured game shader binaries as test fixtures.

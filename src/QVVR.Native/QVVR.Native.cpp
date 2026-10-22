@@ -246,6 +246,8 @@ extern "C"
     {
         return gpuTiming.Latest();
     }
+    __declspec(dllexport) void __cdecl QVVR_ConfigureDiagnostics(int enabled)
+    { qvvr::ConfigureShaderDiagnostics(enabled != 0); }
     __declspec(dllexport) void __cdecl QVVR_SetDetailedGpuTiming(int enabled) { gpuTiming.ConfigureDetailed(enabled != 0); }
     __declspec(dllexport) double __cdecl QVVR_GetGpuPhaseTime(int phase) { return gpuTiming.Phase(static_cast<unsigned>(phase)); }
     __declspec(dllexport) void __cdecl QVVR_ReadXrPacing(qvvr::FramePacingSnapshot *snapshot)

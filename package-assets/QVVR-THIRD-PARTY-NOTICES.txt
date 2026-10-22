@@ -1,14 +1,51 @@
 QVVR includes or depends on the following third-party software in release packages:
 
 BepInEx 5.4.23.5
-Copyright BepInEx contributors
+Copyright (c) 2018 Bepis and contributors
+License: MIT (the pinned v5.4.23.5 source license, not the current main branch)
+https://github.com/BepInEx/BepInEx/tree/v5.4.23.5
+License text: BepInEx/plugins/QVVR/licenses/BepInEx.txt
+
+Unity Doorstop 4.5.0 (winhttp.dll, unmodified replaceable bootstrap)
 License: GNU Lesser General Public License v2.1
-https://github.com/BepInEx/BepInEx
+https://github.com/NeighTools/UnityDoorstop/tree/v4.5.0
+License text: BepInEx/plugins/QVVR/licenses/UnityDoorstop.txt
+Complete corresponding upstream source is supplied in:
+BepInEx/plugins/QVVR/licenses/source/UnityDoorstop-v4.5.0-source.zip
+Source archive SHA-256:
+7f0c963104aa08bf5fefef8ff85e7fecd8306838f5af3101487d9db4e9188d63
+QVVR does not restrict replacement/debugging of this shared library for personal
+use. The original DLL and build sources are not modified by this project.
+
+HarmonyX 2.9.0 and inherited Harmony code
+Copyright (c) 2020 BepInEx; Copyright (c) 2017 Andreas Pardeike
+License: MIT
+https://github.com/BepInEx/HarmonyX/tree/v2.9.0
+License texts: BepInEx/plugins/QVVR/licenses/HarmonyX.txt and Harmony.txt
+
+BepInEx.Harmony / HarmonyXInterop / 0Harmony20 compatibility assemblies
+Source commit: d4cdcb4cdeac14a0b77012165f5f5a9f5032a9fa
+License: MIT
+https://github.com/BepInEx/BepInEx.Harmony/tree/d4cdcb4cdeac14a0b77012165f5f5a9f5032a9fa
+License text: BepInEx/plugins/QVVR/licenses/BepInEx.Harmony.txt
+
+MonoMod.RuntimeDetour and MonoMod.Utils 22.01.29.01
+Copyright (c) 2015 - 2020 0x0ade
+License: MIT
+https://github.com/MonoMod/MonoMod/tree/v22.01.29.01
+License text: BepInEx/plugins/QVVR/licenses/MonoMod.txt
+
+Mono.Cecil 0.10.4 (including Mdb/Pdb/Rocks runtime assemblies, not debug symbols)
+Copyright (c) 2008 - 2015 Jb Evain; Copyright (c) 2008 - 2011 Novell, Inc.
+License: MIT
+https://github.com/jbevain/cecil/tree/0.10.4
+License text: BepInEx/plugins/QVVR/licenses/Mono.Cecil.txt
 
 OpenVR SDK 2.15.6
 Copyright Valve Corporation
 License: BSD 3-Clause License
 https://github.com/ValveSoftware/openvr
+License text: BepInEx/plugins/QVVR/licenses/OpenVR.txt
 
 QVVR does not distribute QV game assemblies or assets.
 

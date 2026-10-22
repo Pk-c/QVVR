@@ -56,7 +56,7 @@ Targets are allocated at cold registration only and released on disable/scene
 refresh; warmed hooks allocate no C++ memory. All modified graphics bindings are
 explicitly restored. Context-state swaps are avoided here because they invalidate
 intercepted D3D runtime dispatch entry points. The original inward geometry fade
-remains; caps soften their own grazing silhouette. This opt-in prototype assumes
+remains; caps soften their own grazing silhouette. This experimental prototype assumes
 closed, consistently wound solids; open/non-manifold meshes and near-plane cuts
 are not generally solved. Verify actual mesh/batch coverage and GPU costs on Frame.
 
@@ -99,6 +99,22 @@ Set both gains to 1 for the prior entry fit.
 
 ## Input and 2D presentation
 
+QV's `DialogManager.GetPosition` projects actors with the original game camera;
+`Dialog.GetActorPosition` adds its popup offsets to those screen coordinates.
+Those positions are not a useful reading location after walking around a diorama.
+`DialogHudLayout` discovers exact `Dialog` components only under captured canvases
+during cold canvas maintenance. Immediately around the existing UI camera render,
+it aligns each visible dialogue rectangle's visual center to the capture canvas
+center, accounting for nested parents, scale and noncentral pivots. A `finally`
+restores original anchored positions, preserving game animation and flat fallback.
+The adaptive UI cache snapshots AFTER restoration, so the temporary override does
+not become the persistent expected layout. No added texture, camera pass, eye
+readback, shader patch or per-frame discovery/allocation is involved. On opening,
+the existing upright viewer-follow HUD anchor is reset in front of the user, then
+its configured follow lag resumes. Other HUD widget positions are unchanged.
+`Comfort.CenterDialogs=false` restores the original layout; fixed flat cinematics
+and non-gameplay flat screens always retain their original dialogue layout.
+
 VR values are bridged into Rewired without editing game assemblies. Viewer-relative
 movement is scoped to CharacterMove movement/jump queries: walking compensates
 QV's main-camera yaw; grid-based jumping does not apply that extra cancellation.
@@ -130,12 +146,20 @@ locomotion and right-only diorama axes. Game secondary camera axes are zeroed in
 focused VR, including mirrored input in mixed mode. Diorama axes are applied once
 in renderer LateUpdate after game UI queries: yaw about the cylinder center and
 physical horizontal approach/retreat relative to the current viewer position.
+Placement has a configurable 40% dead zone, rescaled response and dominant-axis
+hysteresis: it produces either yaw or approach per sample, not both. Navigation
+and character locomotion keep their existing independent dead zones.
 Both eyes share the updated placement, with no HMD pose filtering or world-size
 change. UI navigation reserves that frame, pause/settings/cinema/grips block
 placement, and sparse settings persistence waits for stick release.
-A UI down edge latches gameplay suppression
-until neutral, so closing a dialog/pause cannot leak a held confirm into a game
-action later in the same frame. Focus recovery, input-layout changes and VR
+A UI down edge latches gameplay suppression until physical buttons are released,
+so closing a dialog/pause cannot leak a held confirm into a game action later in
+the same frame. The walking stick need not recenter to recover. Both dialogue
+handlers poll confirm even when closed; a cold Harmony transpiler reads their
+native IsOpen getter (including its typed ObscuredBool conversion) at method entry
+and suppresses those inactive queries without consuming the gameplay input.
+There is no runtime reflection, boxing or dependency on delayed UI discovery.
+Focus recovery, input-layout changes and VR
 settings transitions likewise require neutral input. Nested scopes restore state
 on exceptions; disconnect/release/disabled input retains original game input.
 Already-delivered hold actions retain a pending ButtonUp until consumed, including
@@ -191,10 +215,23 @@ The verified `IntroStageUIManager._dim` reference identifies the StageUICanvas
 is sampled before our manual stage eye/UI capture, temporarily disabled, then
 restored in a finally block. Other states, 2D recovery, game tweens and input are
 untouched. Scene reset/shutdown also restore any outstanding suppression.
-An explicit menu/config switch recovers captured 2D presentation. These scenes
+A config switch recovers captured 2D presentation. These scenes
 contain actual static/skinned meshes; offline metadata verifies the hook sites,
 but headset framing/performance validation remains required.
-Stereo selections are therefore opt-in/off by default until the Frame test gate.
+Stereo selections are enabled in the reference Frame profile; other headset
+framing/performance still requires validation. Existing saved false values remain.
+
+The ordinary level-entry transition is independent of cinematic routing:
+LevelEntryCompatibility patches only GameManager.GameStart's two verified
+5.5-second CanvasGroup fades with a runtime duration resolver. It requires an
+initialized, enabled independent VR gameplay renderer outside a fixed cinematic.
+The default is 1.5 seconds, keeping the concurrent native 1.5-second FocusOn tween
+ahead of the original completion callbacks. No callback is invoked manually and
+no dialogue, control, save, tutorial or director state is written by the mod.
+The original IL/labels/callback instructions remain; an unexpected fade layout
+fails closed, leaving the game untouched. Desktop, shutdown, disabled VR and
+cinematics use the original duration. No new per-frame scan or render work is
+added; reflection/list allocations are restricted to initial Harmony patching.
 
 The verified first-level `1_1` opening uses a separate compatibility route.
 GameManager SetDirector/OnEndDirector postfixes select flat/stereo presentation;
@@ -260,10 +297,22 @@ See [Unity depth textures](https://docs.unity3d.com/2019.4/Documentation/Manual/
 
 ## Resource and performance rules
 
+OpenVR camera prediction uses the runtime display period minus elapsed time since
+vsync plus its display delay, following the IVRSystem API. Display frequency and
+delay properties refresh at initialization and at most once per second in cold
+maintenance. Per frame there is one nonblocking vsync query and one existing pose
+query; both eyes and native Submit_TextureWithPose retain that same pose snapshot.
+Missing/stale vsync uses one valid cached period plus delay. Unknown frequency
+uses a current pose rather than guessing 72/90 Hz; invalid values are rejected and
+extrapolation is bounded to 100 ms. This is prediction, not an FPS limiter or a
+streaming-latency estimate. The OpenXR branch never calls these OpenVR helpers.
+Policy/helper allocation guards and API-double tests cover runtime changes and
+failure cases; physical SteamVR/streaming validation remains pending.
+
 Hub Exit pause/options/achievements use an intro-only panel override: scale 2
 at the dedicated live HubPauseDistanceMeters value (default 1.2 m, range 0.6-3).
 The World hub keeps its scale 4; gameplay pause/other screens are unchanged.
-One settings row exposes that distance independently of every other panel.
+This distance remains config-only, independent of every other panel.
 
 Physical gameplay eye mapping uses the exact absolute runtime eye snapshot:
 `origin + inversePlacementRotation * (trackingEye - placementPosition) * units`.
@@ -345,6 +394,15 @@ only when needed, after eye pose/projection setup. Source-camera depth modes are
 never stripped. `CullOutsideDiorama=false` restores the previous active-liquid
 policy as well as disabling exterior mesh/cap pruning.
 
+The same cold scan deduplicates the exact WaterBlockMat/Cat Demo Water material.
+Experimental WaterFoamFix sets only its live _FoamColor alpha to zero before both
+gameplay eyes, then restores its original color in finally. Compiled shader
+inspection identified a depth/view-dependent white foam term, but suppression is
+a compatibility workaround rather than proof that the depth math is corrected.
+Surface/depth colors, ink, fog and other liquid materials remain unchanged. The
+override adds no material clones, shader variants, camera passes or eye readback;
+PrepareWater/RestoreWater allocate no managed memory per stereo frame.
+
 Caps register unions of ALL mesh contributors sharing an index buffer, including
 mixed-material contributors. Only immutable baked static batches receive bounded
 registration; moving/unknown contributors make the entire buffer unbounded.
@@ -420,3 +478,63 @@ yield. Its maximum CPU duration is logged with the scheduling flag for A/B tests
 This is not late latching: XR wait/begin, inputs, game Update, exact eye poses and
 XR projection-layer poses keep their previous ordering and one-frame backpressure.
 No HMD smoothing, additional GPU wait or second XR/OpenVR client is introduced.
+
+## Optional full-world VR camera
+
+`Diorama.Enabled=false` now selects a separate `FullVrViewState`, not an unclipped
+miniature. It maps absolute runtime tracking positions into original game space
+at exactly one unit per meter. The tracking-to-world rotation contains only yaw;
+the eye's native orientation/projection supplies physical head pitch/roll and IPD.
+Entry aligns the upright viewing direction with the source camera yaw, 3 game
+units behind Q and 1.6 units above its root. Only Q's translation is followed;
+scripted camera motion and all miniature scale/tilt/placement are excluded.
+
+The existing filtered placement stick becomes free-camera yaw/forward/back.
+Yaw preserves the virtual head position, including room-scale displacement;
+travel follows upright HMD heading. The same inverse view rotation drives
+viewer-relative character input. Physical-space HUD/settings use the equivalent
+calibrated rig transform; per-eye positions use direct absolute tracking mapping.
+No eye texture copies, shader edits, extra passes, reflection or managed hot-path
+allocations are added. Navigation has no physics/camera-collision query.
+
+The menu restores a live cylindrical-diorama toggle. Full-world mode disables
+two-hand manipulation, clipping, cap replay and outside-cylinder visibility
+culling even on an alpha-blend OpenXR session, and restores the original game
+background. It leaves backend initialization and cinema/selection routing alone.
+Free navigation is session-only, never persisted over the saved diorama layout;
+switching back reuses that layout. Scene/movie/recenter/reset-camera transitions
+rebase the normal-scale camera. Timing summaries distinguish `full-vr` from
+`diorama` for subsequent physical CPU/GPU comparisons. Whole-level GPU work can
+increase despite avoiding cylinder overhead; hardware acceptance is pending.
+
+## Low-overhead maintenance and diagnostics
+
+`LightweightUiMaintenance` keeps a generation-marked subscription registry across
+ordinary 0.5-second UI scans. Only new graphics register callbacks; removed
+graphics unregister at the end of the scan. Snapshots still rebuild conservatively
+to cover hierarchy changes. If an active unknown/time-driven material or Animator
+requires continuous capture, the cache releases snapshots and subscriptions and
+uses a constant-time full-capture path. A cold probe every two seconds retries
+tracking; until then ALL captures still run at the configured rate, so newly
+created widgets, fades and changing text cannot freeze. Scene cleanup, disabling
+adaptive capture, the session circuit breaker and the legacy rollback path release
+subscriptions. Dialogue discovery, layer isolation and HUD inset maintenance
+continue on the existing schedule; they are not contingent on cache success.
+
+Normal builds retain basic nonblocking GPU/cadence observations but emit concise
+summaries every 30 seconds. `DiagnosticsEnabled` is latched at startup. Off skips
+per-eye determinant/pivot validation, idle placement stability sampling, automatic
+constant-buffer capture, diagnostic staging buffers and retained shader bytecodes.
+The shader patch variants, alpha/depth corrections, caps and their synchronization
+are unchanged. The new native startup configuration is resolved from the loaded
+module before shader interception, avoiding an eager Mono P/Invoke failure.
+Developer diagnostics re-enable verbose five-second logs and one-shot dumps;
+detailed GPU phases alone use five-second logs without enabling shader dumps.
+
+Maintenance elapsed time is sampled BEFORE log formatting/I/O. The previous log
+batch duration is reported separately and no longer leaks into the following
+maintenance maximum. Both are wall-clock observations, not CPU profiler samples.
+Event hooks keep immediate presentation transitions. Defensive reflection/search
+recovery is polled once per second while idle, 0.1 seconds during a fixed-panel
+movie, and reset on scene changes and movie route transitions. Missing objects
+are retried rather than permanently negative-cached, preserving late activation.

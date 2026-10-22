@@ -25,6 +25,15 @@ iterations have been tested on Steam Frame; the latest layout/input changes need
 further headset testing. Offline tests do not establish a stable 72 Hz result.
 Post-processing compatibility, depth submission and foveation remain future work.
 
+## Release candidate
+
+Version 0.1.0 is being prepared as an **experimental candidate**, not a stable
+release. See [release preparation](docs/release.md) and the
+[English release notes](package-assets/RELEASE-NOTES.txt) for pending headset
+checks, installation, known limits and the publication checklist.
+`tools/verify-release.ps1` builds and runs the automated suites/audits without
+deploying, launching QV, staging files or publishing a release.
+
 ## Build from source
 
 Requirements: Windows x64, PowerShell 7, a .NET SDK supporting netstandard2.0,
@@ -53,8 +62,22 @@ No game files, dependency binaries or release ZIPs are stored in this repository
 
 ## Install and deploy
 
+For the portable Windows USB manager, extract `QVVR-Frame-Setup.zip` beside the
+mod ZIP and double-click **QVVR-Frame-Setup.bat**. Its menu installs/updates or
+uninstalls QVVR on Frame. Put official Android SDK Platform Tools beside it as
+`platform-tools/adb.exe`, or provide `-AdbPath`; an existing ADB on PATH/Android SDK
+is also accepted. Authorize the PC in Frame Developer Mode first. The tool checks
+that QV is closed, validates the package before upload, preserves settings/other
+mods and backs up overwritten/removed overlay files in the game's `.qvvr-backups`.
+It refuses conflicting shared loaders, linked paths and ambiguous devices rather
+than guessing. Steam launch options still need manual configuration. See
+[USB manager instructions](package-assets/QVVR-Frame-Setup.txt) for parameters,
+custom library paths, preview and recovery. Neither install nor uninstall starts
+or terminates QV. No ADB executable is redistributed with the mod.
+
 Close QV before replacing the overlay. Never deploy while it is running.
-Copy a locally built ZIP beside `QV.exe`, or use the deploy-only helper:
+Back up existing mod files. Extract the ZIP **contents** directly beside `QV.exe`
+(not into a nested QVVR folder), or use the deploy-only helper:
 
 ```powershell
 .\tools\deploy-frame.ps1 -Mode Adb -AdbPath 'D:\Tools\platform-tools\adb.exe' -AdbSerial '<device-serial>'
@@ -79,7 +102,40 @@ Without a usable VR runtime, the original desktop view remains available.
 
 USB/SSH updates preserve `BepInEx/config/dev.qvvr.prototype.cfg`. Keep this file
 when updating manually. To uninstall, close QV and run the ownership-checked
-`uninstall.bat` from the installed overlay; shared loader files are preserved.
+`uninstall.bat` from the installed overlay and confirm removal. It moves QVVR into
+a recoverable `.qvvr-backups` folder; settings are kept by default and shared
+loader/other mods remain. Optional PowerShell: `./uninstall.ps1 -RemoveConfig`
+also backs up/removes settings; `-WhatIf` previews without moving anything.
+On SteamOS, remove only `BepInEx/plugins/QVVR` and the QVVR config manually;
+the batch helper targets Windows. Review core/loader replacement if BepInEx is
+shared with other mods. The ZIP is allowlisted and audited, with full license
+texts, corresponding Doorstop source, per-file hashes and an adjacent SHA-256
+checksum. Hashes detect changes but are not a digital publisher signature.
+
+### PCVR: Steam Link or Virtual Desktop
+
+The intended PCVR route is **QVVR OpenVR -> SteamVR -> streaming headset**.
+Quest 3 + Virtual Desktop is a planned hardware acceptance test, not yet a
+validated compatibility claim. Connect through the streaming app and have the
+headset/controllers ready in SteamVR before starting QV manually.
+
+- Use the Windows x64 Mono game and `-force-d3d11` on the Windows PC. The Frame's
+  `WINEDLLOVERRIDES` option is for Proton, not native Windows.
+- Keep `[Diorama] Passthrough=false`; PCVR uses opaque black/green, not the Frame
+  alpha-blend path. A copied Frame config may already have passthrough enabled.
+- Keep `[Input] Layout=FaceButtons` for normalized Touch-style controls. SteamVR
+  legacy controller mapping still determines the physical button/axis roles.
+- Keep compositor frame pacing enabled. OpenVR prediction now uses SteamVR's
+  reported display frequency, display delay and elapsed vsync time, not 1/72 s.
+  This does not force the headset refresh rate or promise a particular FPS.
+- Virtual Desktop's direct VDXR/OpenXR path is not the intended backend for this
+  candidate; use SteamVR. Do not substitute an OpenComposite DLL for the bundled
+  `openvr_api.dll` during this acceptance test.
+
+Check stereo/IPD, head movement, grips, menu buttons, focus/reconnect, black/green
+background and frame times on the actual connection before calling it supported.
+An OpenVR-only input fixture and simulated timing tests do not test streaming
+latency, driver mappings or headset comfort.
 
 ## Controls
 
@@ -105,7 +161,9 @@ backend or a claim of hardware validation on every headset.
 
 - Left stick/pad: viewer-relative character movement. Right stick/pad: left/right
   rotates the diorama about its center; forward brings it closer, backward moves
-  it away, at constant height and size. `MovementStick`, `DioramaStick`, `MenuStick`
+  it away, at constant height and size. With **Cylindrical diorama: Off**, the right
+  stick instead turns the normal-scale camera in place and moves it forward/back
+  along the viewer's upright heading. `MovementStick`, `DioramaStick`, `MenuStick`
   select `Left`, `Right`, `Either` or `None`; menus default to either stick/pad.
   Game secondary camera axes are disabled in focused VR. The old `CameraStick`
   setting is no longer used. Do not assign locomotion and diorama to the same stick
@@ -114,6 +172,9 @@ backend or a claim of hardware validation on every headset.
   `DioramaStickMoveMetersPerSecond=0.6` set full-deflection speeds. Placement uses
   physical meters, preserves tilt, and is saved after release. UI navigation,
   pause, VR settings, cinematics and two-grip gestures block stick placement.
+  `DioramaStickDeadZone=0.4` gives placement a 40% center dead zone and a smooth
+  response outside it. Dominant-axis hysteresis separates turning from approach:
+  a slight diagonal during rotation no longer also moves the diorama.
 - Every button action accepts `Default` (preset), `None`, `LeftPrimary`,
   `LeftSecondary`, `RightPrimary`, `RightSecondary`, `LeftTrigger`, `RightTrigger`,
   `LeftStickClick`, `RightStickClick`, `BothTriggers`, `BothStickClicks` or
@@ -124,6 +185,9 @@ backend or a claim of hardware validation on every headset.
   onto the trigger; also set `NextPage=None` if using it for menu confirmation.
 - Pause/dialog queries use menu bindings even inside a VR gameplay scene. B no
   longer also emits Pause. Menu trigger paging does not also confirm by default.
+  Closed dialogue handlers cannot consume gameplay A. A consumed UI confirm
+  clears on button release without requiring the walking stick to recenter;
+  delayed game polling also retains pending releases for held actions.
 - While Load is held its constituent controls cannot also dash, activate camera
   mode or perform the primary action. A constituent pressed earlier can still
   perform its ordinary action before the full chord is held. Custom overlapping
@@ -142,6 +206,45 @@ backend or a claim of hardware validation on every headset.
 The settings menu uses up/down to select and left/right to adjust. Binding edits
 are currently file-based, not an in-headset rebinding screen. Closing saves
 settings. The game simulation is not paused while this menu is open.
+
+The compact menu has 15 entries: view tilt, render profile, recenter, restore
+comfort defaults, cylindrical diorama on/off, radius/height/center height, void color, passthrough,
+edge fade, clouds, place in front, diorama size and XR eye-scale cap. Position
+and scale remain available through controller gestures/stick placement. Removed
+panel/HUD/debug switches are not silently disabled; their config keys remain.
+Fresh defaults use the reference Frame profile: tilt -16 degrees, 2D panel width
+1.8 m/distance 1.5 m/follow lag 0.6 s, HUD scale 1.8/distance 1.4 m/inset 29%,
+hub pause distance 1.2 m, cylinder on, normal probe, black caps and stereo
+selection menus on. Existing config values are preserved. Restore comfort
+defaults uses the same bound defaults, including the config-only settings.
+
+Disable **Cylindrical diorama** for experimental full-world VR: one game unit per
+physical meter, full stereo/room-scale tracking, no cylinder clipping, caps or
+outside-cylinder culling, and the game's original background. The camera starts
+3 game units behind Q at 1.6 units above the player root, follows Q's translation,
+and ignores scripted gameplay-camera motion and miniature scale/tilt. The right
+stick adds yaw and horizontal forward/back movement; the left still controls Q
+relative to the viewer. **Reset camera behind Q** or **Recenter view** restores
+the starting framing. Two-grip diorama gestures are inactive in this mode.
+Returning to the diorama preserves its placement and size. Cinematics/selection
+menus retain their existing presentation. There is no camera collision handling;
+navigation can enter geometry. Rendering the whole level may increase GPU cost.
+This mode still needs Frame and Quest 3/Virtual Desktop headset acceptance.
+
+Dialogue boxes are centered in the viewer-following HUD instead of following the
+actor's original flat-screen projection. They open in front of the viewer and
+retain the normal upright HUD-follow delay, text animation and portraits. This
+uses the existing UI capture, not an additional render pass. Set
+`[Comfort] CenterDialogs=false` to restore the original layout. Desktop and fixed
+flat cinematics keep their original dialogue placement.
+
+Independent diorama VR shortens the standard level-entry transition before
+dialogue/controls from 5.5 to 1.5 seconds. `Comfort.LevelEntrySeconds` accepts
+1.5-5.5; set 5.5 to restore the original duration. The lower limit preserves QV's
+internal camera-focus timing. Only GameStart's verified entry fades are changed;
+their original completion callbacks still start dialogue/tutorials and movement.
+Story cinematics, desktop and non-independent VR retain their original timing.
+Changes apply at the next entry, not to an already-running transition.
 
 Two-hand translation defaults to **1.15x**, rotation to **1.10x**; head tracking
 and separation-based resize are unchanged. `Controls.DioramaMoveSensitivity`
@@ -172,7 +275,7 @@ alongside overlay UI. The hub leading to costumes is also stereo. These screens
 share the gameplay HUD size, physical distance and capture rate, with upright
 lagged follow and GPU-filtered UI textures. Turn the option off to recover the
 old flat presentation and its independent menu UI settings.
-**HUD center inset** moves root UI layout anchors inward by 12% per edge by
+**HUD center inset** moves root UI layout anchors inward by 29% per edge by
 default (0-45%, live). Staying below 50% avoids collapsed/inverted panels.
 Local font/widget size, game references and offsets stay
 unchanged; 0 restores original anchors. Applies to gameplay/stereo intro capture,
@@ -195,7 +298,7 @@ to 4; maps, costume selection and gameplay keep the user's normal HUD scale and
 their panel distance settings remain unchanged.
 Hub pause/options/achievements (the separate Exit state) use a local scale 2
 panel with its own live `Comfort.HubPauseDistanceMeters` setting (default 1.2 m,
-range 0.6-3 m), exposed as **Hub pause/achievements distance** in VR settings.
+range 0.6-3 m), now available in the config file rather than the compact menu.
 It does not move the gameplay HUD or VR settings window. Other menus and gameplay
 pause remain unchanged. Selecting a map replaces the exact `Cloud.Panel` fade
 rectangle with a full-eye stereo fade following the original tween's opacity.
@@ -213,8 +316,9 @@ defaults to 0.35 of forward depth to its world anchor (1 restores original
 framing). Costume and map cameras are unaffected. The map screen's specific
 `LobbyDim` renderer is hidden only during VR eye/UI capture, then restored;
 game-side fade tweens, navigation and desktop output remain intact.
-This experimental option is off by default: visual framing, state transitions
-and CPU/GPU costs still need Frame testing.
+Stereo selection menus are enabled in the reference profile; set
+`VR.StereoSelectionMenus=false` for flat recovery. New hardware still needs
+visual framing, state-transition and CPU/GPU checks.
 
 The old 1 m entry floor is removed: entry now keeps an 8 cm bounding-sphere
 margin, with a 0.35 m minimum for tiny dioramas. Manual distance adjustment allows
@@ -261,6 +365,14 @@ liquid renderer is active. This addresses missing/stale screen-space depth;
 it does not freeze/fake camera position or guarantee every liquid artifact is fixed.
 The extra opaque depth pass needs a headset performance comparison.
 
+`Diorama.WaterFoamFix=true` is an experimental workaround for blue water appearing
+white from above. It temporarily disables only the white foam of the inspected
+`WaterBlockMat` material during gameplay stereo rendering; the game's surface and
+depth colors remain unchanged. Live values are restored afterward, including on
+render failure. Ink, fog, menus, flat cinematics and desktop rendering are not
+changed. This reuses the cold liquid scan and adds no render pass or texture.
+Set false for an A/B comparison; the visual result still needs Frame validation.
+
 Passthrough compatibility temporarily changes only the verified
 `FairyMaterial` / `Custom/2SideShader` material's opaque One/Zero blend to
 SrcAlpha/OneMinusSrcAlpha during manual gameplay renders, then restores its live
@@ -278,7 +390,8 @@ fallback backgrounds on the Frame before claiming performance/correctness.
 
 **Black cut surfaces (experimental)** enables GPU stencil cross-sections of
 registered opaque mesh geometry, without a solid black cylinder hiding the scene.
-It is **off by default** until Frame correctness/performance testing. It costs an
+It is enabled in the reference Frame profile (`Diorama.BlackCutSurfaces=false`
+disables it through the config file). It costs an
 extra geometry pass and private GPU depth/stencil targets when enabled.
 Open/non-manifold meshes, camera-inside-solid views, dynamic geometry and batching
 can limit coverage; this is not a general-purpose watertight mesh repair.
@@ -294,6 +407,22 @@ liquid depth, prunes eligible static-batch cap replays, reuses unchanged HUD
 captures and draws the ordinary HUD without another camera render. Independent
 rollback switches and optional per-pass GPU timestamps are documented in
 [testing](docs/testing.md#performance-pass-validation). Frame gains remain to be measured.
+
+`Performance.LightweightUiMaintenance=true` retains unchanged HUD dirty
+subscriptions instead of reinstalling them every scan. UI that requires continuous
+capture temporarily drops snapshot/subscription tracking and retries caching every
+two seconds; capture rate, mipmaps and text resolution stay unchanged. Set false
+for the previous full-tracking A/B path.
+
+Normal operation writes concise performance summaries every 30 seconds, without
+automatic shader/constant-buffer dumps or per-eye validation-only math.
+`Performance.DiagnosticsEnabled=true` restores developer diagnostics and five-second
+verbose logs on the next manual launch. `DetailedGpuTimings=true` also uses
+five-second verbose timing logs but does not enable shader dumps by itself.
+Maintenance and logging wall-clock durations are reported separately. Event hooks
+still handle menu/cinema transitions immediately; idle recovery polling is once
+per second and active fixed-panel cinema recovery remains at 0.1 seconds.
+These are overhead reductions to validate on Frame, not a measured FPS guarantee.
 
 ## Repository and licensing
 
