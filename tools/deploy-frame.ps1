@@ -16,6 +16,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $zip = Join-Path $root 'build\release\QVVR-v0.1.0.zip'
+$frameSetup = Join-Path $root 'package-assets\QVVR-Frame-Setup.ps1'
 
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'build.ps1')
@@ -54,36 +55,19 @@ if ($Mode -eq 'Adb') {
         throw "ADB was not found: $AdbPath. Install Android SDK Platform Tools or pass -AdbPath."
     }
 
-    $adbTarget = @()
-    if ($AdbSerial) {
-        $adbTarget = @('-s', $AdbSerial)
-    }
-
     if ($AdbUsbLegacy) {
         $env:ADB_USB_LEGACY = '1'
         & $adb.Source 'kill-server' | Out-Null
     }
 
-    & $adb.Source @adbTarget 'get-state'
-    if ($LASTEXITCODE -ne 0) {
-        throw 'No authorized Steam Frame was found over ADB. Enable Developer Mode and authorize this PC in the headset.'
+    # Same path as end users: package validation, QV-closed check, recoverable
+    # backup, settings preservation and Steam launch options.
+    $setupArguments = @{ Action = 'Install'; PackagePath = $zip; AdbPath = $adb.Source; RemoteGameDir = $RemoteGameDir }
+    if ($AdbSerial) { $setupArguments.Serial = $AdbSerial }
+    & $frameSetup @setupArguments
+    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+        throw 'Steam Frame installation failed.'
     }
-
-    $remoteArchive = '/tmp/qvvr-deploy.zip'
-    Write-Host "Uploading $zip to the Steam Frame over USB..."
-    & $adb.Source @adbTarget 'push' $zip $remoteArchive
-    if ($LASTEXITCODE -ne 0) {
-        throw 'ADB upload failed.'
-    }
-
-    $remoteCommand = "set -eu; test -d '$RemoteGameDir'; if pgrep -f '(^|[[:space:]\\/])QV[.]exe([[:space:]]|$)' >/dev/null; then echo 'QV is running. Close it before deploying; no files were replaced.' >&2; exit 1; fi; if test -f '$RemoteGameDir/BepInEx/config/dev.qvvr.prototype.cfg'; then bsdtar -xf '$remoteArchive' --exclude 'BepInEx/config/dev.qvvr.prototype.cfg' -C '$RemoteGameDir'; else bsdtar -xf '$remoteArchive' -C '$RemoteGameDir'; fi; rm -f '$remoteArchive'"
-    & $adb.Source @adbTarget 'shell' $remoteCommand
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Remote extraction failed. The uploaded archive was left in /tmp for inspection.'
-    }
-
-    Write-Host "QVVR deployed over USB to $RemoteGameDir"
-    Write-Host 'Required launch options: WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11'
     return
 }
 
@@ -93,11 +77,21 @@ if (-not $scp -or -not $ssh) {
     throw 'Ssh mode requires the Windows OpenSSH scp and ssh commands.'
 }
 
+# The release ZIP holds PC/ + SteamFrame/; upload only the rebuilt game overlay.
+function New-FrameOverlayArchive([string]$Release, [string]$Destination) {
+    . $frameSetup
+    New-QvvrUploadArchive $Release $Destination
+}
+$overlayZip = Join-Path ([IO.Path]::GetTempPath()) ('qvvr-overlay-' + [Guid]::NewGuid().ToString('N') + '.zip')
+New-FrameOverlayArchive $zip $overlayZip
+
 $remoteArchive = '/home/steamos/qvvr-deploy.zip'
 $destination = "$FrameUser@$FrameHost"
-Write-Host "Uploading $zip to $destination..."
-& $scp.Source $zip "${destination}:$remoteArchive"
-if ($LASTEXITCODE -ne 0) {
+Write-Host "Uploading the QVVR overlay to $destination..."
+& $scp.Source $overlayZip "${destination}:$remoteArchive"
+$scpExit = $LASTEXITCODE
+Remove-Item -LiteralPath $overlayZip -Force
+if ($scpExit -ne 0) {
     throw 'SCP upload failed.'
 }
 
@@ -108,4 +102,4 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "QVVR deployed to ${destination}:$RemoteGameDir"
-Write-Host 'Required launch options: WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11'
+Write-Host 'Required launch options (set them in Steam, or run SteamFrame option 4 over USB): WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11'

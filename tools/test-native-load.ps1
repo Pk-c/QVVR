@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$pluginDirectory = Join-Path $root 'build\release\QVVR-v0.1.0\BepInEx\plugins\QVVR'
+$pluginDirectory = Join-Path $root 'build\release\QVVR-v0.1.0\PC\BepInEx\plugins\QVVR'
 if (-not [Environment]::Is64BitProcess) { throw 'Run this smoke test in x64 PowerShell.' }
 
 if (-not ('QVVRNativeLoadTest' -as [type])) {

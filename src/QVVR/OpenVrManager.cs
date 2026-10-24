@@ -544,12 +544,13 @@ namespace QVVR
         private bool initialized;
         private bool resourcesReleased;
         private bool gameplayScene;
-        private bool introScene, stereoMenuScene;
+        private bool introScene, stereoMenuScene, stereoMenuDiagnosticPending;
         private IntroPresentation introPresentation;
         private IntroMenuCompatibility introMenus;
         private FirstLevelIntroCompatibility levelIntro;
         private LevelEntryCompatibility levelEntry;
         private SectorCinemaCompatibility sectorCinema;
+        private CharacterSwapCompatibility characterSwap;
         private bool firstLevelScene, levelIntroFlat, cinemaCaptureFailed, openingScene;
         private Camera levelIntroCamera;
         private readonly FixedPanelAnchor cinemaPanelAnchor = new FixedPanelAnchor();
@@ -561,6 +562,7 @@ namespace QVVR
         private VrSettingsMenu settingsMenu;
         private Transform gameplayTarget;
         private Type gameManagerType;
+        private UnityEngine.Object gameManager;
         private Type playerType;
         private FieldInfo playerField;
         private Vector3 rigPosition;
@@ -761,6 +763,8 @@ namespace QVVR
             levelIntro.Initialize(this);
             sectorCinema = new SectorCinemaCompatibility();
             sectorCinema.Initialize(this);
+            characterSwap = new CharacterSwapCompatibility();
+            characterSwap.Initialize(this);
             initialized = true;
             levelEntry = new LevelEntryCompatibility();
             levelEntry.Initialize(this, plugin);
@@ -824,6 +828,7 @@ namespace QVVR
             bool stereo = MenuScenePolicy.StereoSelection(plugin.StereoSelectionMenus.Value, introScene, state);
             if (stereoMenuScene == stereo) return;
             stereoMenuScene = stereo;
+            stereoMenuDiagnosticPending = stereo;
             needsRecenter = true; panelPoseValid = false;
             nextFlatCapture = nextUiCapture = 0f;
             RedirectOverlayCanvases();
@@ -1169,6 +1174,7 @@ namespace QVVR
             {
                 calibrationInverse = absoluteHead.inverse;
                 needsRecenter = false;
+                if (stereoMenuScene) stereoMenuDiagnosticPending = true;
                 Plugin.Log.LogInfo("OpenVR view recentered.");
             }
             Matrix4x4 relativeHead = calibrationInverse * absoluteHead;
@@ -1411,28 +1417,28 @@ namespace QVVR
             uiPanel.transform.localScale = new Vector3(width * hudScale, height * hudScale, 1f);
         }
 
-        private void RefreshGameplayTarget()
+        // Cold maintenance and GameManager swap callbacks only. The game's
+        // newPlayerClass changes on character swap: always re-read it rather
+        // than keeping the first character for the whole level.
+        internal void RefreshGameplayTarget()
         {
             if (!gameplayScene) return;
-            if (gameplayTarget != null)
-            {
-                RefreshCharacterVisuals();
-                return;
-            }
             Component player = null;
             if (gameManagerType != null && playerField != null)
             {
-                UnityEngine.Object manager = FindObjectOfType(gameManagerType);
-                if (manager != null) player = playerField.GetValue(manager) as Component;
+                if (gameManager == null) gameManager = FindObjectOfType(gameManagerType);
+                if (gameManager != null) player = playerField.GetValue(gameManager) as Component;
             }
-            if (player == null && playerType != null)
+            if (player == null && gameplayTarget == null && playerType != null)
                 player = FindObjectOfType(playerType) as Component;
-            if (player != null)
+            if (player != null && player.transform != gameplayTarget)
             {
+                bool swapped = gameplayTarget != null;
                 gameplayTarget = player.transform;
-                RefreshCharacterVisuals();
-                Plugin.Log.LogInfo("QVVR camera distance pivot: " + CameraSelector.PathOf(gameplayTarget));
+                Plugin.Log.LogInfo((swapped ? "QVVR character swap; camera pivot: " : "QVVR camera distance pivot: ") +
+                    CameraSelector.PathOf(gameplayTarget));
             }
+            if (gameplayTarget != null) RefreshCharacterVisuals();
         }
 
         private void CacheHeadPose(Matrix4x4 absoluteHead)
@@ -1826,7 +1832,13 @@ namespace QVVR
             camera.projectionMatrix = UsesOpenXr ?
                 (eye == EVREye.Eye_Left ? xrFrame.LeftFov : xrFrame.RightFov).Projection(near, far) :
                 ToUnityProjection(system.GetProjectionMatrix(eye, near, far));
-            bool cylinder = FullVrViewState.ClipWorld(gameplayScene, panelOnly, NativeBridge.ShaderClipReady, plugin.DioramaEnabled.Value);
+            if (diagnosticsEnabled && stereoMenuDiagnosticPending && stereoMenuScene && !panelOnly && eye == EVREye.Eye_Left)
+            {
+                // Diagnostics only: one line per stereo-menu entry/recenter, never per frame.
+                stereoMenuDiagnosticPending = false;
+                LogStereoMenuDiagnostic(camera, trackingEye);
+            }
+            bool cylinder =FullVrViewState.ClipWorld(gameplayScene, panelOnly, NativeBridge.ShaderClipReady, plugin.DioramaEnabled.Value);
             bool liquidVisible = !panelOnly && plugin.LiquidDepthFix.Value &&
                 (!plugin.CullOutsideDiorama.Value ? liquidDepth.NeedsDepth : liquidDepth.Visible(camera,
                     cylinder && plugin.DioramaEnabled.Value && CylinderProbeMode == 0, frameCylinderCenter,
@@ -1915,6 +1927,26 @@ namespace QVVR
             }
             if (multisampled != null) multisampled.ResolveAntiAliasedSurface(resolved);
             screenFade.Render(resolved);
+        }
+
+        private void LogStereoMenuDiagnostic(Camera camera, Matrix4x4 trackingEye)
+        {
+            Vector3 hub = Vector3.zero;
+            bool hasHub = introMenus != null && introMenus.TryGetHubAnchor(out hub);
+            Matrix4x4 p = camera.projectionMatrix;
+            Vector3 relative = (Vector3)(calibrationInverse * trackingEye).GetColumn(3);
+            Plugin.Log.LogInfo(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "QVVR stereo menu diagnostic: backend={0} state={1} | source {2} pos={3} rot={4} ortho={5} size={6:F2} fov={7:F1} near={8:F3} far={9:F1} clear={10} bg={11} mask=0x{12:X8} depth={13} | hub={14} {15} scale={16:F2} | rig pos={17} rot={18} units={19:F2} | eye pos={20} fwd={21} rel={22} near={23:F3} far={24:F1} clear={25} mask=0x{26:X8} msaa={27} target={28}x{29} | proj m00={30:F3} m11={31:F3} m22={32:F4} m23={33:F4} m32={34:F1} reversedZ={35}",
+                UsesOpenXr ? "OpenXR" : "OpenVR", introPresentation,
+                CameraSelector.PathOf(sourceCamera.transform), sourceCamera.transform.position.ToString("F2"), sourceCamera.transform.eulerAngles.ToString("F1"),
+                sourceCamera.orthographic, sourceCamera.orthographicSize, sourceCamera.fieldOfView, sourceCamera.nearClipPlane, sourceCamera.farClipPlane,
+                sourceCamera.clearFlags, sourceCamera.backgroundColor, sourceMask, sourceCamera.depth,
+                hasHub, hub.ToString("F2"), plugin.IntroHubDistanceScale.Value,
+                rigPosition.ToString("F2"), rigRotation.eulerAngles.ToString("F1"), rigUnitsPerMeter,
+                camera.transform.position.ToString("F2"), camera.transform.forward.ToString("F2"), relative.ToString("F2"),
+                camera.nearClipPlane, camera.farClipPlane, camera.clearFlags, camera.cullingMask,
+                camera.allowMSAA, camera.targetTexture != null ? camera.targetTexture.width : 0, camera.targetTexture != null ? camera.targetTexture.height : 0,
+                p.m00, p.m11, p.m22, p.m23, p.m32, SystemInfo.usesReversedZBuffer));
         }
 
         private static void RenderPanelOverlay(Camera camera)
@@ -2260,7 +2292,7 @@ namespace QVVR
             introPresentation = IntroPresentation.Unknown; stereoMenuScene = false;
             if (introMenus != null) introMenus.Reset();
             sceneChangedAt = Time.unscaledTime;
-            gameplayTarget = null;
+            gameplayTarget = null; gameManager = null;
             dioramaAnchorValid = false;
             panelPoseValid = false;
             if (settingsMenu != null) settingsMenu.Close();
@@ -2305,7 +2337,12 @@ namespace QVVR
             Matrix4x4 result = new Matrix4x4();
             result.SetRow(0, new Vector4(matrix.m0, matrix.m1, matrix.m2, matrix.m3));
             result.SetRow(1, new Vector4(matrix.m4, matrix.m5, matrix.m6, matrix.m7));
-            result.SetRow(2, new Vector4(matrix.m8, matrix.m9, matrix.m10, matrix.m11));
+            // OpenVR returns D3D clip depth (0..w): m22=-f/(f-n), m23=-fn/(f-n).
+            // Unity camera projections are OpenGL-style (-w..w); passing D3D
+            // depth halves clip z, which pushes Unity fog to ~far/2 (fully
+            // fogged stereo menus) and wastes half the depth range.
+            result.SetRow(2, new Vector4(2f * matrix.m8 - matrix.m12, 2f * matrix.m9 - matrix.m13,
+                2f * matrix.m10 - matrix.m14, 2f * matrix.m11 - matrix.m15));
             result.SetRow(3, new Vector4(matrix.m12, matrix.m13, matrix.m14, matrix.m15));
             return result;
         }
@@ -2324,6 +2361,7 @@ namespace QVVR
             if (levelEntry != null) levelEntry.Release();
             if (levelIntro != null) levelIntro.Release();
             if (sectorCinema != null) sectorCinema.Release();
+            if (characterSwap != null) characterSwap.Release();
             screenFade.Release();
             uiCaptureCache.Clear();
             visibility.Clear();

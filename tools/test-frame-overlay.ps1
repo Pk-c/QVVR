@@ -108,6 +108,9 @@ echo "Frame POSIX overlay: $checks assertions passed (local fixtures, not hardwa
 '@
 Write-ShellFixture 'tests.sh' $tests
 $shellRoot=$fixtureRoot.Replace('\','/')
-$zip=(Join-Path $root 'build/release/QVVR-v0.1.0.zip').Replace('\','/')
+# The Frame receives the overlay rebuilt from the release PC/ folder.
+$overlayZip=Join-Path $fixtureRoot 'overlay.zip'
+New-QvvrUploadArchive (Join-Path $root 'build/release/QVVR-v0.1.0.zip') $overlayZip
+$zip=$overlayZip.Replace('\','/')
 & $BashPath --noprofile --norc (Join-Path $fixtureRoot 'tests.sh') $shellRoot $zip
 if($LASTEXITCODE -ne 0){throw "Frame overlay shell fixture failed. Inspect $fixtureRoot"}

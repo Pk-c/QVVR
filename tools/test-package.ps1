@@ -5,7 +5,10 @@ $root=Split-Path -Parent $PSScriptRoot
 if(!$ZipPath){$ZipPath=Join-Path $root 'build/release/QVVR-v0.1.0.zip'}
 . (Join-Path $PSScriptRoot 'package-layout.ps1')
 $inputs=Get-QvvrPackageFiles $root $Configuration
-$expected=@($inputs.Keys)+@('.qvvr-loader-owner','qvvr-package.json','qvvr-files.sha256')
+$extras=Get-QvvrReleaseExtraFiles $root
+# Release ZIP: PC/<overlay> (copied beside QV.exe / uploaded to Frame) + extras.
+$overlayNames=@($inputs.Keys)+@('.qvvr-loader-owner','qvvr-package.json','qvvr-files.sha256')
+$expected=@($overlayNames | ForEach-Object {"PC/$_"})+@($extras.Keys)
 
 function Assert-QvvrEntryNames([string[]]$Names,[string[]]$Allowed){
  $seen=@{}
@@ -17,7 +20,7 @@ function Assert-QvvrEntryNames([string[]]$Names,[string[]]$Allowed){
  if($seen.Count -ne $Allowed.Count){throw 'Archive file inventory incomplete.'}
 }
 # Exercise the fail-closed path gate independently of the current archive.
-foreach($bad in @('../QV.exe','/QV.exe','C:/QV.exe','BepInEx\secret.cfg','logs.txt','README.TXT')){
+foreach($bad in @('../QV.exe','/QV.exe','C:/QV.exe','PC/BepInEx\secret.cfg','logs.txt','PC/README.TXT','BepInEx/plugins/QVVR/QVVR.dll','SteamFrame/adb.exe')){
  $rejected=$false;try{Assert-QvvrEntryNames (@($expected)+$bad) $expected}catch{$rejected=$true}
  if(!$rejected){throw 'Archive path rejection self-test failed.'}
 }
@@ -37,7 +40,7 @@ try {
  }
  Assert-QvvrEntryNames @($entries.Keys) $expected
  function Read-ArchiveText([string]$Name){
-  $reader=[IO.StreamReader]::new($entries[$Name].Open())
+  $reader=New-Object IO.StreamReader($entries[$Name].Open())
   try{return $reader.ReadToEnd()}finally{$reader.Dispose()}
  }
  $hashes=@{}
@@ -46,29 +49,32 @@ try {
   try{$hashes[$name]=[BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose();$stream.Dispose()}
  }
  foreach($file in $inputs.GetEnumerator()){
-  if($hashes[$file.Key] -ne (Get-FileHash -LiteralPath $file.Value -Algorithm SHA256).Hash.ToLowerInvariant()){throw "Archive input differs: $($file.Key)"}
+  if($hashes["PC/$($file.Key)"] -ne (Get-FileHash -LiteralPath $file.Value -Algorithm SHA256).Hash.ToLowerInvariant()){throw "Archive input differs: PC/$($file.Key)"}
+ }
+ foreach($file in $extras.GetEnumerator()){
+  if($hashes[$file.Key] -ne (Get-FileHash -LiteralPath $file.Value -Algorithm SHA256).Hash.ToLowerInvariant()){throw "Release file differs from source: $($file.Key)"}
  }
  $listed=@{}
- foreach($line in (Read-ArchiveText 'qvvr-files.sha256') -split '\r?\n'){
+ foreach($line in (Read-ArchiveText 'PC/qvvr-files.sha256') -split '\r?\n'){
   if(!$line){continue}
   if($line -cnotmatch '^([0-9a-f]{64})  (.+)$'){throw 'Malformed file checksum manifest.'}
   $digest=$Matches[1];$name=$Matches[2]
-  if($listed.ContainsKey($name) -or $name -eq 'qvvr-files.sha256' -or !$hashes.ContainsKey($name) -or $hashes[$name] -ne $digest){throw 'File checksum verification failed.'}
+  if($listed.ContainsKey($name) -or $name -eq 'qvvr-files.sha256' -or $name -cnotin $overlayNames -or $hashes["PC/$name"] -ne $digest){throw 'File checksum verification failed.'}
   $listed[$name]=$true
  }
- if($listed.Count -ne $entries.Count-1){throw 'File checksum manifest incomplete.'}
- $manifest=Read-ArchiveText 'qvvr-package.json' | ConvertFrom-Json
+ if($listed.Count -ne $overlayNames.Count-1){throw 'File checksum manifest incomplete.'}
+ $manifest=Read-ArchiveText 'PC/qvvr-package.json' | ConvertFrom-Json
  $source=Get-Content (Join-Path $root 'src/QVVR/Plugin.cs') -Raw
  $version=[regex]::Match($source,'public const string Version = "([0-9]+\.[0-9]+\.[0-9]+)";').Groups[1].Value
  if($manifest.version -ne $version -or $manifest.name -ne 'QVVR' -or $manifest.steamAppId -ne 1494110 -or $manifest.architecture -ne 'win-x64' -or $manifest.releaseStatus -ne 'candidate-pending-headset-qa' -or $manifest.experimental -ne $true){throw 'Invalid release metadata.'}
  if($manifest.sourceCommit -notmatch '^[0-9a-f]{40}$' -or $manifest.sourceDirty -isnot [bool]){throw 'Source provenance missing.'}
  if([Reflection.AssemblyName]::GetAssemblyName($inputs['BepInEx/plugins/QVVR/QVVR.dll']).Version.ToString() -ne "$version.0"){throw 'Managed binary version differs from release version.'}
- if((Read-ArchiveText '.qvvr-loader-owner').Trim() -ne "QVVR $version installed BepInEx 5.4.23.5"){throw 'Ownership marker missing/stale.'}
- if((Read-ArchiveText '.doorstop_version').Trim() -ne '4.5.0'){throw 'Unexpected Doorstop version.'}
- $config=Read-ArchiveText 'BepInEx/config/dev.qvvr.prototype.cfg'
+ if((Read-ArchiveText 'PC/.qvvr-loader-owner').Trim() -ne "QVVR $version installed BepInEx 5.4.23.5"){throw 'Ownership marker missing/stale.'}
+ if((Read-ArchiveText 'PC/.doorstop_version').Trim() -ne '4.5.0'){throw 'Unexpected Doorstop version.'}
+ $config=Read-ArchiveText 'PC/BepInEx/config/dev.qvvr.prototype.cfg'
  if($config -notmatch '(?m)^PlacementSaved = false\r?$' -or $config -notmatch '(?m)^Passthrough = false\r?$'){throw 'Release must use the clean unsaved, desktop-safe config template.'}
  # Our text only: upstream license/source copyright notices are retained verbatim.
- foreach($name in @('README.txt','RELEASE-NOTES.txt','qvvr-package.json','BepInEx/config/dev.qvvr.prototype.cfg')){
+ foreach($name in @('README.txt','SteamFrame/QVVR-Frame-Setup.txt','PC/README.txt','PC/RELEASE-NOTES.txt','PC/qvvr-package.json','PC/BepInEx/config/dev.qvvr.prototype.cfg')){
   $text=Read-ArchiveText $name
   if($text -match '(?i)([a-z]:[\\/]Users[\\/](?!Public\b)|\bgh[pousr]_[a-z0-9]{20,}|\bgithub_pat_[a-z0-9_]{20,}|-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----)'){throw "Private data pattern in archive text: $name"}
  }
@@ -76,4 +82,4 @@ try {
  $expectedHashLine=$zipHash+'  '+[IO.Path]::GetFileName($ZipPath)
  if((Get-Content -LiteralPath "$ZipPath.sha256" -Raw).Trim() -cne $expectedHashLine){throw 'ZIP checksum sidecar mismatch.'}
 }finally{$archive.Dispose()}
-Write-Host "Package audit passed: $($expected.Count) exact files, original input hashes, complete licenses/source, clean config, metadata and SHA-256 manifests. Not headset validation or a publisher signature."
+Write-Host "Package audit passed: $($expected.Count) exact files (PC overlay + SteamFrame installer), original input hashes, complete licenses/source, clean config, metadata and SHA-256 manifests. Not headset validation or a publisher signature."

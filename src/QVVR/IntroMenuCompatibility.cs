@@ -96,6 +96,11 @@ namespace QVVR
                 if (manager != null) stageDim = stageDimField.GetValue(manager) as Renderer;
             }
         }
+        internal bool TryGetHubAnchor(out Vector3 position)
+        {
+            position = hubAnchor != null ? hubAnchor.position : default(Vector3);
+            return hubAnchor != null;
+        }
         internal Vector3 HubPosition(Vector3 cameraPosition, Quaternion rotation, float distanceScale)
         {
             if (hubAnchor == null) return cameraPosition;

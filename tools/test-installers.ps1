@@ -5,6 +5,7 @@ $root=Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'package-assets/uninstall.ps1')
 . (Join-Path $root 'package-assets/QVVR-Frame-Setup.ps1')
 . (Join-Path $PSScriptRoot 'package-layout.ps1')
+Add-Type -AssemblyName System.IO.Compression,System.IO.Compression.FileSystem
 $testRoot=Join-Path $root ('artifacts/installer-tests-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $script:checks=0
@@ -54,9 +55,30 @@ Assert-Rejected {Invoke-QvvrPcUninstall -GameDir $junctionGame} 'Linked backup p
 Assert-Installer (Test-Path -LiteralPath (Join-Path $junctionGame 'BepInEx/plugins/QVVR/QVVR.dll')) 'Link rejection must precede plugin movement.'
 
 $zipPath=Join-Path $root 'build/release/QVVR-v0.1.0.zip'
-Test-QvvrInstallArchive $zipPath
+$overlayZip=Join-Path $testRoot 'overlay-from-release.zip'
+New-QvvrUploadArchive $zipPath $overlayZip
 $expected=@((Get-QvvrPackageFiles $root).Keys)+@('.qvvr-loader-owner','qvvr-package.json','qvvr-files.sha256')
 Assert-Installer (@(Compare-Object ($expected | Sort-Object) ((Get-QvvrInstallFiles) | Sort-Object)).Count -eq 0) 'Installer/package allowlists diverged.'
+Assert-Installer (@(Compare-Object (@((Get-QvvrReleaseExtraFiles $root).Keys) | Sort-Object) ((Get-QvvrReleaseExtraNames) | Sort-Object)).Count -eq 0) 'Installer/package release extras diverged.'
+# Extracted release: the default source is the PC folder beside SteamFrame.
+$extracted=Join-Path $testRoot 'extracted release'
+[IO.Compression.ZipFile]::ExtractToDirectory($zipPath,$extracted)
+$fromFolder=Join-Path $testRoot 'overlay-from-folder.zip'
+New-QvvrUploadArchive (Join-Path $extracted 'PC') $fromFolder
+Write-Fixture (Join-Path $extracted 'PC') 'BepInEx/plugins/QVVR/extra.dll' 'unexpected'
+Assert-Rejected {New-QvvrUploadArchive (Join-Path $extracted 'PC') (Join-Path $testRoot 'extra.zip')} 'Unexpected PC folder file must be rejected.'
+Remove-Item -LiteralPath (Join-Path $extracted 'PC/BepInEx/plugins/QVVR/extra.dll')
+$incomplete=Join-Path $testRoot 'incomplete release'
+[IO.Compression.ZipFile]::ExtractToDirectory($zipPath,$incomplete)
+Remove-Item -LiteralPath (Join-Path $incomplete 'PC/LICENSE.txt')
+Assert-Rejected {New-QvvrUploadArchive (Join-Path $incomplete 'PC') (Join-Path $testRoot 'missing.zip')} 'Incomplete PC folder must be rejected.'
+foreach($bad in @('PC/../QV.exe','PC/extra.txt','SteamFrame/adb.exe','QVVR.dll')){
+ $badRelease=Join-Path $testRoot ([Guid]::NewGuid().ToString('N')+'.zip')
+ Copy-Item -LiteralPath $zipPath -Destination $badRelease
+ $archive=[IO.Compression.ZipFile]::Open($badRelease,[IO.Compression.ZipArchiveMode]::Update)
+ try{$entry=$archive.CreateEntry($bad);$stream=$entry.Open();$stream.WriteByte(1);$stream.Dispose()}finally{$archive.Dispose()}
+ Assert-Rejected {New-QvvrUploadArchive $badRelease (Join-Path $testRoot ([Guid]::NewGuid().ToString('N')+'.zip'))} "Unexpected release entry must be rejected: $bad"
+}
 foreach($bad in @('../QV.exe','extra.txt','README.TXT')){
  $badZip=Join-Path $testRoot ([Guid]::NewGuid().ToString('N')+'.zip')
  $archive=[IO.Compression.ZipFile]::Open($badZip,[IO.Compression.ZipArchiveMode]::Create)
@@ -64,7 +86,7 @@ foreach($bad in @('../QV.exe','extra.txt','README.TXT')){
  Assert-Rejected {Test-QvvrInstallArchive $badZip} 'Unsafe ZIP must be rejected.'
 }
 $badZip=Join-Path $testRoot 'corrupted.zip'
-Copy-Item -LiteralPath $zipPath -Destination $badZip
+Copy-Item -LiteralPath $overlayZip -Destination $badZip
 $archive=[IO.Compression.ZipFile]::Open($badZip,[IO.Compression.ZipArchiveMode]::Update)
 try{$archive.GetEntry('BepInEx/plugins/QVVR/QVVR.dll').Delete();$entry=$archive.CreateEntry('BepInEx/plugins/QVVR/QVVR.dll');$stream=$entry.Open();$stream.WriteByte(1);$stream.Dispose()}finally{$archive.Dispose()}
 Assert-Rejected {Test-QvvrInstallArchive $badZip} 'Corrupted package must be rejected.'
@@ -73,22 +95,61 @@ $archive=[IO.Compression.ZipFile]::Open($badZip,[IO.Compression.ZipArchiveMode]:
 try{$entry=$archive.CreateEntry('README.txt');$entry.ExternalAttributes=-1610612736}finally{$archive.Dispose()}
 Assert-Rejected {Test-QvvrInstallArchive $badZip} 'Symlink ZIP entries must be rejected.'
 
-$tools=Get-QvvrFrameToolFiles $root
-$toolZip=Join-Path $root 'build/release/QVVR-Frame-Setup.zip'
-$archive=[IO.Compression.ZipFile]::OpenRead($toolZip)
-try{
- Assert-Installer ($archive.Entries.Count -eq $tools.Count) 'Unexpected Frame tools inventory.'
- foreach($file in $tools.GetEnumerator()){
-  $reader=New-Object IO.StreamReader($archive.GetEntry($file.Key).Open())
-  try{Assert-Installer ($reader.ReadToEnd() -ceq (Get-Content -LiteralPath $file.Value -Raw)) 'Packaged Frame tool differs from source.'}finally{$reader.Dispose()}
- }
-}finally{$archive.Dispose()}
+# Launch-option merge and read-only Steam config parsing.
+$required='WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11'
+foreach($case in @(
+ @('',$required,$true),
+ @($required,$required,$false),
+ @('-skipintro','WINEDLLOVERRIDES="winhttp=n,b" %command% -skipintro -force-d3d11',$true),
+ @('PROTON_LOG=1 %command% -force-gfx-direct','WINEDLLOVERRIDES="winhttp=n,b" PROTON_LOG=1 %command% -force-gfx-direct -force-d3d11',$true),
+ @('WINEDLLOVERRIDES="dinput8=n,b;winhttp=n,b" %command% -force-d3d11','WINEDLLOVERRIDES="dinput8=n,b;winhttp=n,b" %command% -force-d3d11',$false)
+)){
+ $plan=Get-QvvrLaunchOptionsPlan $case[0]
+ Assert-Installer (!$plan.Conflict -and $plan.Value -ceq $case[1] -and $plan.Changed -eq $case[2]) "Launch-option merge failed for '$($case[0])': '$($plan.Value)'"
+}
+foreach($conflict in @('%command% -force-vulkan','WINEDLLOVERRIDES="dinput8=n,b" %command%','PROTON_LOG=1')){
+ $plan=Get-QvvrLaunchOptionsPlan $conflict
+ Assert-Installer ($plan.Conflict -and !$plan.Changed -and $plan.Value -ceq $conflict) "Conflicting launch options must be left unchanged: $conflict"
+}
+$vdf=@'
+"UserLocalConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"1494110"		"00ff"
+				"apps"
+				{
+					"791240"
+					{
+						"LaunchOptions"		"other"
+					}
+					"1494110"
+					{
+						"cloud" { "last_sync_state" "synchronized" }
+						"LaunchOptions"		"WINEDLLOVERRIDES=\"winhttp=n,b\" %command% -force-d3d11"
+					}
+				}
+			}
+		}
+	}
+}
+'@
+Assert-Installer ((Get-QvvrVdfLaunchOptions $vdf '1494110') -ceq $required) 'Steam config launch options were not parsed.'
+Assert-Installer ($null -eq (Get-QvvrVdfLaunchOptions $vdf '42')) 'Unknown app must have no launch options.'
 
 # Exercise real PC-side orchestration with an ADB boundary double. Remote shell
 # operations themselves are tested separately; nothing touches a physical Frame.
 $script:trace=New-Object 'Collections.Generic.List[string]'
 $script:devices=@('fake-frame device')
 function Find-QvvrAdb([string]$Requested){return 'fake-adb'}
+$script:steamOptions='';$script:steamReachable=$true;$script:savedOptions=$null;$script:setOptions=New-Object 'Collections.Generic.List[string]'
+function Get-QvvrSteamLaunchOptions{$script:trace.Add('steam-get');if(!$script:steamReachable){throw 'Fixture: Steam unreachable'};return $script:steamOptions}
+function Set-QvvrSteamLaunchOptions([string]$Value){$script:trace.Add('steam-set');$script:setOptions.Add($Value);$script:steamOptions=$Value}
+function Get-QvvrConfigLaunchOptions{return $script:savedOptions}
 function Invoke-QvvrAdb([string[]]$Arguments){
  $script:trace.Add(($Arguments -join '|'))
  if($Arguments[0] -eq 'devices'){return $script:devices}
@@ -111,6 +172,27 @@ for($i=0;$i -lt $recorded.Count;$i++){
 }
 Assert-Installer ($checkIndex -ge 0 -and $checkIndex -lt $pushIndex -and $pushIndex -lt $installIndex) 'Frame operation order must be check -> upload -> install.'
 Assert-Installer (!($recorded | Where-Object {$_ -match 'kill-server|rm -rf|am start|steam://'})) 'Unexpected destructive/server/launch command.'
+$setIndex=[Array]::IndexOf($recorded,'steam-set')
+Assert-Installer ($setIndex -gt $installIndex) 'Launch options must be applied after the verified installation.'
+Assert-Installer ($script:setOptions.Count -eq 1 -and $script:setOptions[0] -ceq $required) 'Empty launch options must be set to the QVVR requirement.'
+$script:trace.Clear();$script:setOptions.Clear()
+Invoke-QvvrFrameSetup -Action Install -PackagePath (Join-Path $extracted 'PC') -RemoteGameDir '/home/steamos/.local/share/Steam/steamapps/common/QV' -SkipLaunchOptions
+Assert-Rejected {Invoke-QvvrFrameSetup -Action Install -PackagePath (Join-Path $incomplete 'PC') -RemoteGameDir '/home/steamos/.local/share/Steam/steamapps/common/QV'} 'Incomplete PC folder must refuse installation.'
+Assert-Installer (!($script:trace | Where-Object {$_ -match '^steam-'})) 'SkipLaunchOptions/refused install must not touch Steam.'
+$script:trace.Clear()
+Invoke-QvvrFrameSetup -Action LaunchOptions -RemoteGameDir '/home/steamos/.local/share/Steam/steamapps/common/QV'
+Assert-Installer ($script:setOptions.Count -eq 0 -and !($script:trace | Where-Object {$_ -match 'manage.sh|^push'})) 'Already-set launch options must not be rewritten or touch game files.'
+$script:steamOptions='%command% -force-vulkan'
+Assert-Rejected {Invoke-QvvrFrameSetup -Action LaunchOptions -RemoteGameDir '/home/steamos/.local/share/Steam/steamapps/common/QV'} 'Conflicting launch options must be reported.'
+Assert-Installer ($script:setOptions.Count -eq 0) 'Conflicting launch options must not be changed.'
+$script:steamOptions='';Invoke-QvvrFrameSetup -Action LaunchOptions -RemoteGameDir '/home/steamos/.local/share/Steam/steamapps/common/QV' -WhatIf
+Assert-Installer ($script:setOptions.Count -eq 0) 'WhatIf must not change launch options.'
+$script:steamReachable=$false;$script:savedOptions=$required
+Assert-Installer (Update-QvvrFrameLaunchOptions) 'Saved Steam config with the options must count as already set.'
+$script:savedOptions=''
+Assert-Installer (!(Update-QvvrFrameLaunchOptions)) 'Unreachable Steam without saved options must report failure.'
+Assert-Installer ($script:setOptions.Count -eq 0) 'Unreachable Steam must not be changed.'
+$script:steamReachable=$true
 $script:trace.Clear();$script:devices=@('one device','two device')
 Assert-Rejected {Invoke-QvvrFrameSetup -Action Uninstall -RemoteGameDir '/home/steamos/.local/share/Steam/steamapps/common/QV'} 'Ambiguous devices must refuse.'
 Assert-Installer (!($script:trace | Where-Object {$_ -match '^(shell|push)\|'})) ('Multiple-device rejection must precede remote mutation: '+($script:trace -join ';'))

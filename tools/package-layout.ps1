@@ -24,8 +24,10 @@ function Get-QvvrPackageFiles([string]$Root,[string]$Configuration='Release') {
  return $files
 }
 
-function Get-QvvrFrameToolFiles([string]$Root) {
+# Release ZIP files outside PC/ (the game overlay): Frame USB installer + guide.
+function Get-QvvrReleaseExtraFiles([string]$Root) {
  $files=[ordered]@{}
- foreach($name in @('QVVR-Frame-Setup.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt')){$files[$name]=Join-Path $Root "package-assets/$name"}
+ $files['README.txt']=Join-Path $Root 'package-assets/RELEASE-README.txt'
+ foreach($name in @('QVVR-Frame-Setup.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt')){$files["SteamFrame/$name"]=Join-Path $Root "package-assets/$name"}
  return $files
 }

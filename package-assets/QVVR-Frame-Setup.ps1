@@ -1,14 +1,17 @@
 #requires -Version 5.1
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
-    [ValidateSet('Menu','Install','Uninstall')][string]$Action='Menu',
+    [ValidateSet('Menu','Install','Uninstall','LaunchOptions')][string]$Action='Menu',
     [string]$PackagePath,
     [string]$AdbPath,
     [string]$Serial,
     [string]$RemoteGameDir='/home/steamos/.local/share/Steam/steamapps/common/QV',
-    [switch]$RemoveConfig
+    [switch]$RemoveConfig,
+    [switch]$SkipLaunchOptions
 )
 $ErrorActionPreference='Stop'
+$script:QvvrSteamAppId=1494110
+$script:QvvrRequiredLaunchOptions='WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11'
 
 function Get-QvvrInstallFiles {
     foreach ($name in @('0Harmony.dll','0Harmony20.dll','BepInEx.dll','BepInEx.Harmony.dll','BepInEx.Preloader.dll','HarmonyXInterop.dll','Mono.Cecil.dll','Mono.Cecil.Mdb.dll','Mono.Cecil.Pdb.dll','Mono.Cecil.Rocks.dll','MonoMod.RuntimeDetour.dll','MonoMod.Utils.dll')) { "BepInEx/core/$name" }
@@ -21,8 +24,77 @@ function Get-QvvrInstallFiles {
     '.qvvr-loader-owner'; 'qvvr-package.json'; 'qvvr-files.sha256'
 }
 
+# Release ZIP = PC/<overlay> + these files. Only PC/ content is ever uploaded.
+function Get-QvvrReleaseExtraNames {
+    'README.txt'
+    foreach ($name in @('QVVR-Frame-Setup.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt')) { "SteamFrame/$name" }
+}
+
+function Find-QvvrPackageSource {
+    $release=Split-Path -Parent $PSScriptRoot
+    $pc=Join-Path $release 'PC'
+    if (Test-Path -LiteralPath (Join-Path $pc 'qvvr-package.json') -PathType Leaf) { return $pc }
+    $packages=@(Get-ChildItem -LiteralPath $PSScriptRoot,$release -Filter 'QVVR-v*.zip' -File -ErrorAction SilentlyContinue)
+    if ($packages.Count -eq 1) { return $packages[0].FullName }
+    Write-Host 'The PC folder of the release was not found beside SteamFrame. Extract the WHOLE release ZIP first.'
+    return Read-Host 'Full path to the release PC folder or release ZIP (without surrounding quotes)'
+}
+
+# Rebuilds the exact overlay ZIP that is uploaded from the extracted PC folder or
+# the release ZIP, then validates it with Test-QvvrInstallArchive.
+function New-QvvrUploadArchive([string]$Source,[string]$Destination) {
+    Add-Type -AssemblyName System.IO.Compression,System.IO.Compression.FileSystem
+    $allowed=@(Get-QvvrInstallFiles)
+    $extras=@(Get-QvvrReleaseExtraNames)
+    $Source=(Resolve-Path -LiteralPath $Source).ProviderPath
+    if (Test-Path -LiteralPath $Destination) { throw "Upload archive already exists: $Destination" }
+    $output=[IO.Compression.ZipFile]::Open($Destination,[IO.Compression.ZipArchiveMode]::Create)
+    try {
+        if (Test-Path -LiteralPath $Source -PathType Container) {
+            $root=$Source.TrimEnd('\','/')
+            foreach ($item in Get-ChildItem -LiteralPath $root -Recurse -Force) {
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked content is not allowed in the PC folder: $($item.FullName)" }
+                if ($item.PSIsContainer) { continue }
+                $name=$item.FullName.Substring($root.Length+1).Replace('\','/')
+                if ($name -cnotin $allowed) { throw "Unexpected file in the PC folder: $name. Use a freshly extracted release." }
+            }
+            foreach ($name in $allowed) {
+                $path=Join-Path $root $name
+                if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Incomplete PC folder; missing: $name" }
+                [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($output,$path,$name,[IO.Compression.CompressionLevel]::Optimal) | Out-Null
+            }
+        } else {
+            if (Test-Path -LiteralPath "$Source.sha256" -PathType Leaf) {
+                $expected=(Get-Content -LiteralPath "$Source.sha256" -Raw).Trim()
+                $actual=(Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash.ToLowerInvariant()+'  '+[IO.Path]::GetFileName($Source)
+                if ($expected -cne $actual) { throw 'Release ZIP checksum sidecar mismatch.' }
+            }
+            $release=[IO.Compression.ZipFile]::OpenRead($Source)
+            try {
+                $seen=@{}; $total=0L
+                foreach ($entry in $release.Entries) {
+                    $name=$entry.FullName
+                    $kind=($entry.ExternalAttributes -shr 16) -band 61440
+                    if ($kind -notin @(0,32768,16384)) { throw 'Linked/special ZIP entries are not allowed.' }
+                    if ($name.EndsWith('/')) { continue }
+                    if ($seen.ContainsKey($name)) { throw "Duplicate release ZIP path: $name" }
+                    $seen[$name]=$true
+                    if ($name -cin $extras) { continue }
+                    if (!$name.StartsWith('PC/',[StringComparison]::Ordinal) -or $name.Substring(3) -cnotin $allowed) { throw "Unexpected release ZIP path: $name" }
+                    $total+=$entry.Length
+                    if ($entry.Length -gt 67108864 -or $total -gt 268435456) { throw 'Package exceeds size safety limits.' }
+                    $target=$output.CreateEntry($name.Substring(3),[IO.Compression.CompressionLevel]::Optimal)
+                    $in=$entry.Open(); $out=$target.Open()
+                    try { $in.CopyTo($out) } finally { $out.Dispose(); $in.Dispose() }
+                }
+            } finally { $release.Dispose() }
+        }
+    } finally { $output.Dispose() }
+    Test-QvvrInstallArchive $Destination
+}
+
 function Test-QvvrInstallArchive([string]$Path) {
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    Add-Type -AssemblyName System.IO.Compression,System.IO.Compression.FileSystem
     $allowed=@(Get-QvvrInstallFiles)
     $zip=[IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $Path).ProviderPath)
     try {
@@ -84,6 +156,182 @@ function Invoke-QvvrAdb([string[]]$Arguments) {
     $output=@(& $script:qvvrAdb @script:qvvrTarget @Arguments)
     if ($LASTEXITCODE -ne 0) { throw "ADB failed ($LASTEXITCODE). Check USB authorization and the device connection." }
     return $output
+}
+
+# Adds the required loader override/graphics API to existing options instead of
+# replacing them. Ambiguous combinations are reported, never rewritten.
+function Get-QvvrLaunchOptionsPlan([string]$Current) {
+    $current=if ($null -eq $Current) { '' } else { $Current.Trim() }
+    if (!$current) { return [pscustomobject]@{ Value=$script:QvvrRequiredLaunchOptions; Changed=$true; Conflict=$null } }
+    $index=$current.IndexOf('%command%',[StringComparison]::Ordinal)
+    if ($index -ge 0) { $pre=$current.Substring(0,$index).Trim(); $post=$current.Substring($index+9).Trim() }
+    elseif ($current -match '^[A-Za-z_][A-Za-z0-9_]*=') { return [pscustomobject]@{ Value=$current; Changed=$false; Conflict='Environment variables are set without %command%.' } }
+    else { $pre=''; $post=$current }
+    if ($post -match '(^|\s)-force-(d3d12|vulkan|glcore|metal)\b') { return [pscustomobject]@{ Value=$current; Changed=$false; Conflict='Another graphics API is forced; QVVR requires -force-d3d11.' } }
+    if ($pre -match 'WINEDLLOVERRIDES=') {
+        if ($pre -notmatch 'winhttp=n,b') { return [pscustomobject]@{ Value=$current; Changed=$false; Conflict='WINEDLLOVERRIDES is already set without winhttp=n,b.' } }
+    } else { $pre=('WINEDLLOVERRIDES="winhttp=n,b" '+$pre).Trim() }
+    if ($post -notmatch '(^|\s)-force-d3d11(\s|$)') { $post=($post+' -force-d3d11').Trim() }
+    $value=(@($pre,'%command%',$post) | Where-Object { $_ }) -join ' '
+    return [pscustomobject]@{ Value=$value; Changed=($value -cne $current); Conflict=$null }
+}
+
+# Read-only fallback: Steam rewrites localconfig.vdf while running, so it is
+# never edited; it only tells whether the options are already present.
+function Get-QvvrVdfLaunchOptions([string]$Text,[string]$AppId) {
+    $target=@('userlocalconfigstore','software','valve','steam','apps',$AppId)
+    $path=New-Object 'Collections.Generic.List[string]'
+    $pending=$null
+    foreach ($match in [regex]::Matches($Text,'//[^\n]*|"((?:[^"\\]|\\.)*)"|\{|\}|[^\s{}"]+')) {
+        $token=$match.Value
+        if ($token.StartsWith('//')) { continue }
+        if ($token -eq '{') { if ($null -eq $pending) { throw 'Malformed Steam configuration.' }; $path.Add($pending.ToLowerInvariant()); $pending=$null; continue }
+        if ($token -eq '}') { if ($path.Count -eq 0) { throw 'Malformed Steam configuration.' }; $path.RemoveAt($path.Count-1); $pending=$null; continue }
+        $value=if ($match.Groups[1].Success) { [regex]::Replace($match.Groups[1].Value,'\\(.)',{ param($m) switch -CaseSensitive ($m.Groups[1].Value) { 'n' {"`n"} 't' {"`t"} 'r' {"`r"} default {$m.Groups[1].Value} } }) } else { $token }
+        if ($null -eq $pending) { $pending=$value; continue }
+        if ($pending -eq 'LaunchOptions' -and $path.Count -eq $target.Count -and (($path -join '/') -eq ($target -join '/'))) { return $value }
+        $pending=$null
+    }
+    return $null
+}
+
+function Get-QvvrConfigLaunchOptions {
+    $config=((Invoke-QvvrAdb @('shell',"find /home/steamos/.local/share/Steam/userdata -type f -path '*/config/localconfig.vdf' -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -n 1 | cut -f2-")) -join '').Trim()
+    if ($config -notmatch '^/home/steamos/\.local/share/Steam/userdata/[0-9]+/config/localconfig\.vdf$') { throw 'No Steam user configuration was found on the Frame.' }
+    $file=Join-Path ([IO.Path]::GetTempPath()) ('qvvr-localconfig-'+[Guid]::NewGuid().ToString('N')+'.vdf')
+    try {
+        Invoke-QvvrAdb @('pull',$config,$file) | Out-Null
+        return Get-QvvrVdfLaunchOptions ([IO.File]::ReadAllText($file)) "$script:QvvrSteamAppId"
+    } finally { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue -WhatIf:$false }
+}
+
+function Invoke-QvvrDevToolsEvaluate([Uri]$Uri,[string]$Expression) {
+    $socket=New-Object Net.WebSockets.ClientWebSocket
+    $timeout=New-Object Threading.CancellationTokenSource 15000
+    try {
+        [void]$socket.ConnectAsync($Uri,$timeout.Token).GetAwaiter().GetResult()
+        $request=@{ id=1; method='Runtime.evaluate'; params=@{ expression=$Expression; awaitPromise=$true; returnByValue=$true } } | ConvertTo-Json -Compress -Depth 4
+        $bytes=[Text.Encoding]::UTF8.GetBytes($request)
+        [void]$socket.SendAsync([ArraySegment[byte]]::new($bytes),[Net.WebSockets.WebSocketMessageType]::Text,$true,$timeout.Token).GetAwaiter().GetResult()
+        $buffer=New-Object byte[] 65536
+        while ($true) {
+            $stream=New-Object IO.MemoryStream
+            do {
+                $result=$socket.ReceiveAsync([ArraySegment[byte]]::new($buffer),$timeout.Token).GetAwaiter().GetResult()
+                if ($result.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Close) { throw 'Steam closed the DevTools connection.' }
+                $stream.Write($buffer,0,$result.Count)
+            } while (!$result.EndOfMessage)
+            $message=[Text.Encoding]::UTF8.GetString($stream.ToArray()) | ConvertFrom-Json
+            if ($message.id -ne 1) { continue }
+            if ($message.error) { throw "Steam rejected the DevTools request: $($message.error.message)" }
+            $details=$message.result.exceptionDetails
+            if ($details) { $text=if ($details.exception.description) { $details.exception.description } else { $details.text }; throw "Steam script failed: $text" }
+            return $message.result.result.value
+        }
+    } finally { $timeout.Dispose(); $socket.Dispose() }
+}
+
+# Steam client's own API through its CEF DevTools port, forwarded over USB.
+# Requires Steam running and CEF Remote Debugging enabled in Frame developer settings.
+function Invoke-QvvrSteamScript([string]$Expression) {
+    $errors=@()
+    foreach ($remotePort in @(8080,8081)) {
+        $localPort=$null
+        try {
+            $forward=((Invoke-QvvrAdb @('forward','tcp:0',"tcp:$remotePort")) -join '').Trim()
+            if ($forward -notmatch '^\d+$') { throw 'ADB did not return a forwarded port.' }
+            $localPort=[int]$forward
+            $request=[Net.HttpWebRequest]::Create("http://127.0.0.1:$localPort/json/list")
+            $request.Timeout=5000; $request.ReadWriteTimeout=5000; $request.Proxy=$null
+            $response=$request.GetResponse()
+            try { $reader=New-Object IO.StreamReader($response.GetResponseStream()); $list=$reader.ReadToEnd(); $reader.Dispose() } finally { $response.Dispose() }
+            $target=$null
+            foreach ($entry in ($list | ConvertFrom-Json)) { if ("$($entry.title)" -like '*SharedJSContext*' -and $entry.webSocketDebuggerUrl) { $target=$entry; break } }
+            if (!$target) { $errors+="Port $remotePort has no SharedJSContext."; continue }
+            $builder=New-Object UriBuilder ([Uri]$target.webSocketDebuggerUrl)
+            $builder.Host='127.0.0.1'; $builder.Port=$localPort
+            return Invoke-QvvrDevToolsEvaluate $builder.Uri $Expression
+        } catch { $errors+=$_.Exception.Message }
+        finally { if ($localPort) { try { Invoke-QvvrAdb @('forward','--remove',"tcp:$localPort") | Out-Null } catch { } } }
+    }
+    throw ('Steam DevTools are not reachable over USB. '+(($errors | Select-Object -Unique) -join ' '))
+}
+
+function Get-QvvrSteamLaunchOptions {
+    $js=@'
+(async () => {
+  const api = window.SteamClient && window.SteamClient.Apps;
+  if (!api || typeof api.RegisterForAppDetails !== "function") throw new Error("SteamClient.Apps.RegisterForAppDetails is unavailable.");
+  return await new Promise((resolve, reject) => {
+    let registration = null, done = false;
+    const release = () => setTimeout(() => registration && registration.unregister && registration.unregister(), 0);
+    const timer = setTimeout(() => { if (!done) { done = true; release(); reject(new Error("Steam did not report QV details.")); } }, 6000);
+    registration = api.RegisterForAppDetails(__APPID__, (details) => {
+      if (done) return;
+      done = true; clearTimeout(timer); release();
+      resolve((details && details.strLaunchOptions) || "");
+    });
+  });
+})()
+'@
+    $value=Invoke-QvvrSteamScript ($js.Replace('__APPID__',"$script:QvvrSteamAppId"))
+    if ($null -eq $value) { return '' }
+    return [string]$value
+}
+
+function Set-QvvrSteamLaunchOptions([string]$Value) {
+    $js=@'
+(async () => {
+  const api = window.SteamClient && window.SteamClient.Apps;
+  if (!api || typeof api.SetAppLaunchOptions !== "function" || typeof api.RegisterForAppDetails !== "function") throw new Error("SteamClient.Apps launch-option API is unavailable.");
+  const expected = __EXPECTED__;
+  return await new Promise((resolve) => {
+    let registration = null, armed = false, settled = false, actual = "";
+    const finish = (ok) => { if (settled) return; settled = true; clearTimeout(timer); setTimeout(() => registration && registration.unregister && registration.unregister(), 0); resolve({ ok: ok, actual: actual }); };
+    const timer = setTimeout(() => finish(false), 6000);
+    registration = api.RegisterForAppDetails(__APPID__, (details) => {
+      actual = (details && details.strLaunchOptions) || "";
+      if (armed && actual === expected) finish(true);
+    });
+    armed = true;
+    api.SetAppLaunchOptions(__APPID__, expected);
+  });
+})()
+'@
+    $expected=ConvertTo-Json -InputObject $Value -Compress
+    $result=Invoke-QvvrSteamScript ($js.Replace('__APPID__',"$script:QvvrSteamAppId").Replace('__EXPECTED__',$expected))
+    if (!$result -or !$result.ok) { throw "Steam did not confirm the launch-option change. Current value: $(if ($result) { $result.actual } else { 'unknown' })" }
+}
+
+# Never fails an installation: files are already verified at this point.
+function Update-QvvrFrameLaunchOptions {
+    $manual="Set them manually in Steam > QV > Properties > Launch options: $script:QvvrRequiredLaunchOptions"
+    try { $current=Get-QvvrSteamLaunchOptions }
+    catch {
+        $reason=$_.Exception.Message
+        $saved=$null
+        try { $saved=Get-QvvrConfigLaunchOptions } catch { }
+        if ($null -ne $saved) {
+            $plan=Get-QvvrLaunchOptionsPlan $saved
+            if (!$plan.Changed -and !$plan.Conflict) { Write-Host "Steam launch options already set (saved Steam config): $saved"; return $true }
+        }
+        Write-Warning "Steam launch options were not changed: $reason"
+        Write-Warning 'Keep Steam open, enable CEF Remote Debugging in the Frame developer settings, then run menu option 4 (or -Action LaunchOptions).'
+        Write-Warning $manual
+        return $false
+    }
+    $plan=Get-QvvrLaunchOptionsPlan $current
+    if ($plan.Conflict) {
+        Write-Warning "Steam launch options were not changed: $($plan.Conflict) Current value: $current"
+        Write-Warning $manual
+        return $false
+    }
+    if (!$plan.Changed) { Write-Host "Steam launch options already set: $current"; return $true }
+    try { Set-QvvrSteamLaunchOptions $plan.Value }
+    catch { Write-Warning "Steam launch options were not changed: $($_.Exception.Message)"; Write-Warning $manual; return $false }
+    $previous=if ($current) { $current } else { '(empty)' }
+    Write-Host "Steam launch options set: $($plan.Value)  (previous: $previous). Steam stayed open."
+    return $true
 }
 
 function Get-QvvrFrameHelper {
@@ -200,29 +448,29 @@ echo 'Existing QVVR settings and other mods were preserved. QV was not launched.
 
 function Invoke-QvvrFrameSetup {
     [CmdletBinding(SupportsShouldProcess=$true)]
-    param([string]$Action,[string]$PackagePath,[string]$AdbPath,[string]$Serial,[string]$RemoteGameDir,[switch]$RemoveConfig)
+    param([string]$Action,[string]$PackagePath,[string]$AdbPath,[string]$Serial,[string]$RemoteGameDir,[switch]$RemoveConfig,[switch]$SkipLaunchOptions)
     if ($Action -eq 'Menu') {
         Write-Host 'QVVR Steam Frame USB setup - close QV first'
-        Write-Host '1: Install / update   2: Uninstall (keep settings)   3: Uninstall + remove settings   Enter: cancel'
-        switch (Read-Host 'Choose') { '1' {$Action='Install'} '2' {$Action='Uninstall'} '3' {$Action='Uninstall';$RemoveConfig=$true} default {return} }
+        Write-Host '1: Install / update (+ Steam launch options)   2: Uninstall (keep settings)'
+        Write-Host '3: Uninstall + remove settings   4: Steam launch options only   Enter: cancel'
+        switch (Read-Host 'Choose') { '1' {$Action='Install'} '2' {$Action='Uninstall'} '3' {$Action='Uninstall';$RemoveConfig=$true} '4' {$Action='LaunchOptions'} default {return} }
     }
     if ($RemoteGameDir -notmatch '^/(home/steamos|run/media)/[A-Za-z0-9_./() -]+$' -or $RemoteGameDir -match '(^|/)\.\.?(/|$)') { throw 'Use an explicit game path under /home/steamos or /run/media; path traversal and shell characters are not allowed.' }
-    if ($Action -eq 'Install') {
-        if (!$PackagePath) {
-            $packages=@(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'QVVR-v*.zip' -File)
-            if ($packages.Count -eq 1) { $PackagePath=$packages[0].FullName }
-            else { $PackagePath=Read-Host 'Full path to the QVVR release ZIP (without surrounding quotes)' }
-        }
-        $PackagePath=(Resolve-Path -LiteralPath $PackagePath).ProviderPath
-        Test-QvvrInstallArchive $PackagePath
-    }
-    $script:qvvrAdb=Find-QvvrAdb $AdbPath
-    $script:qvvrTarget=@()
-    # Steam Frame's USB bridge is more reliable with the legacy ADB transport.
-    $previousLegacy=$env:ADB_USB_LEGACY
-    $env:ADB_USB_LEGACY='1'
+    $upload=$null
     $local=$null; $remote=$null
+    $previousLegacy=$env:ADB_USB_LEGACY
     try {
+        if ($Action -eq 'Install') {
+            if (!$PackagePath) { $PackagePath=Find-QvvrPackageSource }
+            $local=Join-Path ([IO.Path]::GetTempPath()) ('qvvr-manager-'+[Guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $local -WhatIf:$false | Out-Null
+            $upload=Join-Path $local 'package.zip'
+            New-QvvrUploadArchive $PackagePath $upload
+        }
+        $script:qvvrAdb=Find-QvvrAdb $AdbPath
+        $script:qvvrTarget=@()
+        # Steam Frame's USB bridge is more reliable with the legacy ADB transport.
+        $env:ADB_USB_LEGACY='1'
         if (!$Serial) {
             $devices=@(Invoke-QvvrAdb @('devices') | Where-Object { $_ -match '^\S+\s+device\s*$' } | ForEach-Object { ($_ -split '\s+')[0] })
             if ($devices.Count -eq 0) { throw 'No authorized device. Enable Frame Developer Mode/USB debugging, connect USB and authorize this PC in the headset.' }
@@ -233,20 +481,31 @@ function Invoke-QvvrFrameSetup {
         $state=Invoke-QvvrAdb @('get-state')
         if (($state -join '').Trim() -ne 'device') { throw 'The selected device is not ready/authorized.' }
         Write-Host "Selected device: $Serial"
+        if ($Action -eq 'LaunchOptions') {
+            if (!$PSCmdlet.ShouldProcess('Steam on Frame: QV (app 1494110)','Set QVVR launch options')) { return }
+            if (!(Update-QvvrFrameLaunchOptions)) { throw 'Steam launch options were not applied.' }
+            Write-Host 'Done. Start QV yourself when ready.'
+            return
+        }
         if (!$PSCmdlet.ShouldProcess("Steam Frame: $RemoteGameDir",$Action+' QVVR (with recoverable backup)')) { return }
-        $id=[Guid]::NewGuid().ToString('N')
-        $local=Join-Path ([IO.Path]::GetTempPath()) ('qvvr-manager-'+$id)
-        New-Item -ItemType Directory -Path $local | Out-Null
+        if (!$local) {
+            $local=Join-Path ([IO.Path]::GetTempPath()) ('qvvr-manager-'+[Guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $local -WhatIf:$false | Out-Null
+        }
+        $id=Split-Path -Leaf $local
         $helper=Join-Path $local 'manage.sh'
         [IO.File]::WriteAllText($helper,((Get-QvvrFrameHelper) -replace "`r`n","`n"),(New-Object Text.UTF8Encoding($false)))
-        $remote='/tmp/qvvr-manager-'+$id
+        $remote='/tmp/'+$id
         Invoke-QvvrAdb @('shell',"umask 077; mkdir '$remote'") | Out-Host
         Invoke-QvvrAdb @('push',$helper,"$remote/manage.sh") | Out-Host
         $remove=if ($RemoveConfig) {'1'} else {'0'}
         Invoke-QvvrAdb @('shell',"sh '$remote/manage.sh' Check '$RemoteGameDir' '$remote' '$remove'") | Out-Host
-        if ($Action -eq 'Install') { Invoke-QvvrAdb @('push',$PackagePath,"$remote/package.zip") | Out-Host }
+        if ($Action -eq 'Install') { Invoke-QvvrAdb @('push',$upload,"$remote/package.zip") | Out-Host }
         Invoke-QvvrAdb @('shell',"sh '$remote/manage.sh' '$Action' '$RemoteGameDir' '$remote' '$remove'") | Out-Host
-        if ($Action -eq 'Install') { Write-Host 'Set these Steam launch options manually: WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11' }
+        if ($Action -eq 'Install') {
+            if ($SkipLaunchOptions) { Write-Host "Steam launch options skipped. Required: $script:QvvrRequiredLaunchOptions" }
+            else { Update-QvvrFrameLaunchOptions | Out-Null }
+        }
         else { Write-Host 'QVVR is removed; shared loader remains. QVVR-specific Steam launch options can be removed manually.' }
         Write-Host 'Done. Start QV yourself when ready.'
     } finally {
@@ -254,12 +513,13 @@ function Invoke-QvvrFrameSetup {
         if ($remote) {
             try { Invoke-QvvrAdb @('shell',"rm -f '$remote/package.zip'; echo 'Temporary session retained for diagnostics: $remote'") | Out-Host } catch { Write-Warning 'USB disconnected; temporary files may remain on Frame. The overlay backup is still in the game directory.' }
         }
-        if ($local) { Write-Host "Local helper retained for diagnostics: $local" }
+        if ($upload) { Remove-Item -LiteralPath $upload -Force -ErrorAction SilentlyContinue -WhatIf:$false }
+        if ($local -and (Test-Path -LiteralPath (Join-Path $local 'manage.sh'))) { Write-Host "Local helper retained for diagnostics: $local" }
         $env:ADB_USB_LEGACY=$previousLegacy
     }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    try { Invoke-QvvrFrameSetup -Action $Action -PackagePath $PackagePath -AdbPath $AdbPath -Serial $Serial -RemoteGameDir $RemoteGameDir -RemoveConfig:$RemoveConfig -WhatIf:$WhatIfPreference }
+    try { Invoke-QvvrFrameSetup -Action $Action -PackagePath $PackagePath -AdbPath $AdbPath -Serial $Serial -RemoteGameDir $RemoteGameDir -RemoveConfig:$RemoveConfig -SkipLaunchOptions:$SkipLaunchOptions -WhatIf:$WhatIfPreference }
     catch { Write-Error $_; exit 1 }
 }

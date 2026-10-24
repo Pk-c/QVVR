@@ -31,7 +31,7 @@ Black cut surfaces (experimental) is enabled in the reference Frame profile.
 Set Diorama.BlackCutSurfaces=false in the config to disable it. Open meshes
 and incomplete native batch registration can limit coverage; extra GPU work.
 
-Extract the archive CONTENTS beside QV.exe. Close QV before deployment;
+Copy the CONTENTS of the release PC folder beside QV.exe. Close QV before deployment;
 start it manually afterward. Preserve BepInEx/config/dev.qvvr.prototype.cfg
 when updating manually. USB/SSH deployment preserves it automatically.
 Back up the overlay first; review loader/core files if other mods share BepInEx.
@@ -41,7 +41,8 @@ qvvr-files.sha256 lists payload hashes; the adjacent ZIP.sha256 verifies downloa
 integrity, not publisher identity. No game assemblies/assets or user logs/config
 are bundled; the supplied config is a clean fresh-install reference template.
 
-Steam launch options for the Windows build on Steam Frame:
+Steam launch options for the Windows build on Steam Frame (the SteamFrame USB
+installer sets them automatically when Steam CEF Remote Debugging is enabled):
   WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11
 
 Native Windows PCVR (Steam Link / Virtual Desktop): use -force-d3d11, not the
@@ -186,7 +187,7 @@ Uninstall:
   BepInEx, winhttp.dll, doorstop_config.ini, game files and other mods are kept.
   Optional: powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -RemoveConfig
   also backs up/removes settings. Add -WhatIf for a non-mutating preview.
-  Frame from PC: use the separate QVVR-Frame-Setup.zip USB manager, extracted
-  beside the mod ZIP. Run its .bat and choose install/update or uninstall.
+  Frame from PC: run SteamFrame/QVVR-Frame-Setup.bat from the extracted release
+  ZIP and choose install/update, launch options or uninstall.
   Needs authorized USB debugging and Android SDK Platform Tools (not bundled).
   Existing settings are preserved; incompatible shared loader files are refused.

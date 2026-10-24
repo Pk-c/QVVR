@@ -3,29 +3,45 @@ QVVR - Steam Frame USB manager (Windows PC)
 
 1. Close QV yourself on the Frame. Connect Frame to this PC over USB.
 2. Enable Frame Developer Mode / USB debugging and authorize the PC in the headset.
-3. Extract QVVR-Frame-Setup.zip beside QVVR-vX.Y.Z.zip (do not unpack the mod ZIP).
-4. Put official Android SDK Platform Tools in the same folder, so the path is
-   platform-tools/adb.exe. An existing adb on PATH or Android SDK is also accepted.
-   In the developer checkout the existing ignored .deps ADB is detected too.
-5. Double-click QVVR-Frame-Setup.bat. Select Install/update or Uninstall.
+3. Extract the WHOLE release ZIP (QVVR-vX.Y.Z.zip). This SteamFrame folder must
+   stay beside the PC folder: the installer uploads the content of ../PC.
+4. Put official Android SDK Platform Tools in this folder, so the path is
+   SteamFrame/platform-tools/adb.exe. An existing adb on PATH or Android SDK
+   (ANDROID_SDK_ROOT / ANDROID_HOME) is also accepted.
+5. For automatic Steam launch options: keep Steam running on the Frame and
+   enable CEF Remote Debugging in the Frame developer settings.
+6. Double-click QVVR-Frame-Setup.bat and choose:
+     1  Install / update, then set the Steam launch options
+     2  Uninstall (keep settings)
+     3  Uninstall + remove settings
+     4  Steam launch options only
 
 No administrator rights, game launch, game termination or permanent PowerShell
 execution-policy change is requested. -ExecutionPolicy Bypass applies only to
 this script process. Only use a package and scripts from a source you trust.
 
-Installation validates the mod ZIP inventory, metadata and SHA-256 file hashes,
-then rechecks hashes on Frame and verifies the installed files. These are
-integrity checks, not a digital signature. A .sha256 ZIP sidecar is checked if
-present. Unknown ZIP entries, linked content and incompatible shared loader
-files are rejected. Close QV before every install, update or uninstall.
+Installation validates the PC folder (or release ZIP) inventory, metadata and
+SHA-256 file hashes, rebuilds the exact overlay locally, then rechecks hashes on
+Frame and verifies the installed files. These are integrity checks, not a
+digital signature. A .sha256 sidecar is checked when a release ZIP is given.
+Unknown files, linked content and incompatible shared loader files are rejected.
+Close QV before every install, update or uninstall.
 
 Existing QVVR settings and other mods are kept. Differing shared BepInEx/Doorstop
 files are NEVER overwritten automatically: review an existing loader manually.
 QV.exe and QV_Data are never copied, patched or removed.
 
-Frame Steam launch options must be set manually after the first install:
+Steam launch options (QV, app 1494110):
   WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11
-The tool deliberately does not edit Steam configuration or start QV.
+After installing, the tool reads the current QV launch options through the
+running Steam client (USB-forwarded CEF DevTools, SteamClient.Apps API) and
+adds only what is missing: your other options are kept. Steam stays open and
+must confirm the new value. localconfig.vdf is never edited. If Steam is not
+reachable, the saved Steam config is only read to tell whether the options are
+already set; otherwise set them manually in Steam > QV > Properties, or enable
+CEF Remote Debugging and run option 4. Conflicting options (another forced
+graphics API, a WINEDLLOVERRIDES without winhttp=n,b) are reported, not changed.
+A failure to set launch options never undoes the verified installation.
 
 Uninstall moves only BepInEx/plugins/QVVR into a recoverable backup. Settings
 remain by default; the menu also offers removal of QVVR settings with backup.
@@ -41,15 +57,19 @@ overlay files listed there; never delete the game or the whole BepInEx tree.
 Interrupted operations may need this recovery. USB transfer/staging files are
 separate from backups; small diagnostic sessions are retained under /tmp.
 
-PowerShell examples (no admin required):
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\QVVR-Frame-Setup.ps1 -Action Install -PackagePath .\QVVR-v0.1.0.zip
+PowerShell examples (no admin required, run from this SteamFrame folder):
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\QVVR-Frame-Setup.ps1 -Action Install
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\QVVR-Frame-Setup.ps1 -Action Install -PackagePath ..\..\QVVR-v0.1.0.zip
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\QVVR-Frame-Setup.ps1 -Action LaunchOptions
   powershell -NoProfile -ExecutionPolicy Bypass -File .\QVVR-Frame-Setup.ps1 -Action Uninstall
   powershell -NoProfile -ExecutionPolicy Bypass -File .\QVVR-Frame-Setup.ps1 -Action Uninstall -RemoveConfig
 
 Optional parameters:
+  -PackagePath <PC folder or release ZIP>  Default: ..\PC of this release.
   -AdbPath "C:\Tools\platform-tools\adb.exe"
   -Serial <device-serial>        Required if more than one ADB device is connected.
   -RemoteGameDir <absolute-path> Steam storage below /home/steamos or /run/media.
+  -SkipLaunchOptions            Install files only; do not touch Steam settings.
   -WhatIf                       Validate package/device without uploading/modifying.
 
 Default game path:

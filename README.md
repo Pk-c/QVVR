@@ -62,22 +62,33 @@ No game files, dependency binaries or release ZIPs are stored in this repository
 
 ## Install and deploy
 
-For the portable Windows USB manager, extract `QVVR-Frame-Setup.zip` beside the
-mod ZIP and double-click **QVVR-Frame-Setup.bat**. Its menu installs/updates or
-uninstalls QVVR on Frame. Put official Android SDK Platform Tools beside it as
-`platform-tools/adb.exe`, or provide `-AdbPath`; an existing ADB on PATH/Android SDK
-is also accepted. Authorize the PC in Frame Developer Mode first. The tool checks
-that QV is closed, validates the package before upload, preserves settings/other
-mods and backs up overwritten/removed overlay files in the game's `.qvvr-backups`.
-It refuses conflicting shared loaders, linked paths and ambiguous devices rather
-than guessing. Steam launch options still need manual configuration. See
+The release is a single `QVVR-vX.Y.Z.zip`:
+
+- `PC/`: the game overlay. Copy its **contents** directly beside `QV.exe`.
+- `SteamFrame/`: the portable Windows USB manager for Steam Frame.
+- `README.txt`: short PC/Frame installation guide.
+
+For Frame, extract the whole ZIP and double-click
+**SteamFrame/QVVR-Frame-Setup.bat**. Its menu installs/updates (then sets the
+Steam launch options), sets launch options only, or uninstalls QVVR. It uploads
+only the content of `PC/`. Put official Android SDK Platform Tools in
+`SteamFrame/platform-tools/adb.exe`, or provide `-AdbPath`; an existing ADB on
+PATH/Android SDK is also accepted. Authorize the PC in Frame Developer Mode first.
+The tool checks that QV is closed, validates the package before upload, preserves
+settings/other mods and backs up overwritten/removed overlay files in the game's
+`.qvvr-backups`. It refuses conflicting shared loaders, linked paths and ambiguous
+devices rather than guessing. Launch options are read and applied through the
+running Steam client (USB-forwarded CEF DevTools, `SteamClient.Apps`), keeping
+existing options; this needs CEF Remote Debugging enabled in the Frame developer
+settings, otherwise the tool reports the manual value. See
 [USB manager instructions](package-assets/QVVR-Frame-Setup.txt) for parameters,
 custom library paths, preview and recovery. Neither install nor uninstall starts
 or terminates QV. No ADB executable is redistributed with the mod.
 
 Close QV before replacing the overlay. Never deploy while it is running.
-Back up existing mod files. Extract the ZIP **contents** directly beside `QV.exe`
-(not into a nested QVVR folder), or use the deploy-only helper:
+Back up existing mod files. Copy the contents of the release `PC/` folder directly
+beside `QV.exe` (not into a nested folder), or use the deploy-only helper (ADB mode
+runs the same Frame setup script, including launch options):
 
 ```powershell
 .\tools\deploy-frame.ps1 -Mode Adb -AdbPath 'D:\Tools\platform-tools\adb.exe' -AdbSerial '<device-serial>'

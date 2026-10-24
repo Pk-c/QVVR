@@ -40,12 +40,16 @@ Important limits
 - No eye-depth submission, foveation or guaranteed stable 72 Hz.
 
 Installation and updates
-Close QV. Extract the archive CONTENTS beside QV.exe, not the enclosing ZIP.
+The release ZIP contains PC/ (game overlay), SteamFrame/ (USB installer) and
+README.txt. PC: close QV and copy the CONTENTS of PC/ beside QV.exe.
+Steam Frame: extract the whole ZIP and run SteamFrame/QVVR-Frame-Setup.bat; it
+installs PC/ over USB and completes the QV Steam launch options.
 Back up existing mod files first. If BepInEx is shared with other mods, review
 loader/core replacements rather than overwriting an incompatible installation.
 For an update preserve BepInEx/config/dev.qvvr.prototype.cfg; do not replace
 custom settings with the supplied fresh-install template.
-Frame Steam launch options:
+Frame Steam launch options (set by the SteamFrame installer when Steam CEF
+Remote Debugging is enabled; otherwise set them manually):
   WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11
 Start the game yourself. Deployment never starts or terminates QV.
 

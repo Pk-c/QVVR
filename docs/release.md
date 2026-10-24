@@ -26,12 +26,15 @@ retained; dependency binaries/source ZIPs stay outside Git history.
 
 Artifacts under ignored `build/release/`:
 
-- `QVVR-v0.1.0.zip`: extract its contents directly beside QV.exe.
+- `QVVR-v0.1.0.zip`: the single release archive.
+  - `PC/`: game overlay; copy its contents directly beside QV.exe.
+  - `SteamFrame/`: QVVR-Frame-Setup .bat/.ps1/.txt USB installer (uploads `PC/`).
+  - `README.txt`: short PC/Frame installation guide.
 - `QVVR-v0.1.0.zip.sha256`: download integrity checksum, not a signature.
-- `qvvr-files.sha256` inside the archive: every other packaged file's hash.
-- `qvvr-package.json` inside the archive: version, architecture, source HEAD,
+- `PC/qvvr-files.sha256` inside the archive: every other overlay file's hash.
+- `PC/qvvr-package.json` inside the archive: version, architecture, source HEAD,
   dirty-source flag and candidate status; no private local paths or identity.
-- `RELEASE-NOTES.txt` inside the archive: English notes ready for review.
+- `PC/RELEASE-NOTES.txt` inside the archive: English notes ready for review.
 
 Packaging audits exact ZIP paths (including dotfiles), duplicate/case collisions,
 path traversal, payload/input checksums, runtime version, ownership marker,
@@ -40,14 +43,15 @@ exact tagged source build; rebuild from the chosen clean commit before publishin
 
 ## Automated verification
 
-The build also emits `QVVR-Frame-Setup.zip` and its checksum, separate from the
-game overlay, plus the unpacked .bat/.ps1/instructions beside it. The mod ZIP
-includes uninstall.bat/uninstall.ps1 for local PC removal. Frame tooling requires
-the user's official ADB Platform Tools; no ADB executable is redistributed.
+The Frame USB installer ships in the same ZIP under `SteamFrame/`, outside the
+game overlay; it rebuilds and validates the exact overlay from `PC/` before upload.
+`PC/` includes uninstall.bat/uninstall.ps1 for local PC removal. Frame tooling
+requires the user's official ADB Platform Tools; no ADB executable is redistributed.
 Run installer fixtures on Windows PowerShell 5.1 and PowerShell 7, including the
 Git Bash POSIX fixture. Device USB acceptance (install/update/remove/reinstall,
 custom config preservation, backups, game-open refusal and disconnect recovery)
-is still pending; scripts never auto-launch/terminate QV or edit Steam settings.
+is still pending; scripts never auto-launch/terminate QV. Steam launch options are
+only changed through the running Steam client API, never by editing localconfig.vdf.
 
 Run all `tools/test-*.ps1` suites from individual PowerShell processes after the
 canonical build. See testing.md. In particular include controller, menu,
