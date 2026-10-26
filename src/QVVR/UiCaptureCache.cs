@@ -24,6 +24,12 @@ namespace QVVR
         private readonly List<bool> graphicEnabled = new List<bool>(128);
         private readonly List<bool> graphicBuiltIn = new List<bool>(128);
         private readonly List<UiMaterialWatch> materialWatches = new List<UiMaterialWatch>(128);
+        // Built-in graphics whose custom material is a known static shader
+        // (resolved in cold Watch): compared by reference in Continuous().
+        private readonly List<Material> graphicStaticMaterials = new List<Material>(128);
+        // Looping decorative UI particles disabled while VR captures the HUD;
+        // re-enabled by Clear() (VR off, scene change, cache failure).
+        private readonly List<Graphic> hiddenParticles = new List<Graphic>(16);
         private readonly Dictionary<Graphic, UiMaterialWatch> cachedMaterialWatches = new Dictionary<Graphic, UiMaterialWatch>();
         private readonly List<Graphic> expiredMaterialWatches = new List<Graphic>(16);
         private readonly Dictionary<Graphic, int> subscriptions = new Dictionary<Graphic, int>();
@@ -32,9 +38,15 @@ namespace QVVR
         private bool suspended;
         private float nextProbe;
         private readonly List<Color> graphicColors = new List<Color>(128);
+        private readonly List<float> graphicAlphas = new List<float>(128); // CanvasRenderer alpha (CrossFadeAlpha).
         private readonly List<Canvas> canvases = new List<Canvas>(16);
         private readonly List<bool> canvasEnabled = new List<bool>(16);
         private readonly List<Pose> poses = new List<Pose>(128);
+        // Only ACTIVE widgets are snapshotted. Hidden panels are watched through
+        // the top of each inactive subtree: when one activates, the cache keeps
+        // the original capture cadence until the next scan snapshots it.
+        private readonly List<Transform> inactiveRoots = new List<Transform>(32);
+        private bool stale;
         private readonly List<Group> groups = new List<Group>(16);
         private readonly List<Animator> animators = new List<Animator>(8);
         private readonly List<Graphic> foundGraphics = new List<Graphic>(128);
@@ -49,13 +61,33 @@ namespace QVVR
         internal ulong Reuses { get; private set; }
         internal int ContinuousReason { get; private set; } // 0=static, 1=failed, 2=material, 3=Animator.
         internal bool Suspended { get { return suspended; } }
+        internal bool HideParticles
+        {
+            get { return hideParticles; }
+            set { hideParticles = value; if (!value) RestoreParticles(); }
+        }
+        private bool hideParticles;
+        internal int HiddenParticles { get { return hiddenParticles.Count; } }
+        internal int WatchedGraphics { get { return graphics.Count; } }
+        internal int WatchedRects { get { return poses.Count; } }
+        internal int InactiveRoots { get { return inactiveRoots.Count; } }
+        internal bool Stale { get { return stale; } } // An opened hidden panel awaits a snapshot scan.
         internal UiCaptureCache() { invalidate = Invalidate; }
         internal void Invalidate() { dirty = true; }
         internal void BeginScan()
         { BeginScan(false); }
         private void BeginScan(bool incremental)
         {
-            if (incremental) ClearSnapshots(); else Unwatch();
+            if (incremental)
+            {
+                // A rescan alone must not force a HUD re-render: keep the texture
+                // unless the old snapshot already differs from the live UI.
+                bool changed = dirty || stale || Changed();
+                ClearSnapshots();
+                dirty = changed;
+            }
+            else Unwatch();
+            stale = false;
             scan++;
             // Retain cold-bound TMP delegates across the regular maintenance
             // scan. Destroyed popup widgets must not retain their bound targets.
@@ -116,12 +148,21 @@ namespace QVVR
             {
                 Graphic graphic = foundGraphics[i];
                 if (graphic == null) continue;
+                if (HideParticles && graphic.enabled && IsDecorativeParticle(graphic.GetType()))
+                {
+                    // Looping sparkles would force a full HUD re-render every
+                    // frame. Disabling the Graphic also stops its mesh baking.
+                    graphic.enabled = false;
+                    hiddenParticles.Add(graphic);
+                    continue;
+                }
                 int seen;
                 bool subscribed = subscriptions.TryGetValue(graphic, out seen);
                 if (subscribed && seen == scan) continue;
-                graphics.Add(graphic);
-                graphicEnabled.Add(graphic.enabled);
-                graphicColors.Add(graphic.canvasRenderer.GetColor());
+                bool active = graphic.gameObject.activeInHierarchy;
+                // New visible widgets (instantiated popups) were never captured:
+                // their OnEnable dirty event fired before this subscription.
+                if (!subscribed && active) dirty = true;
                 if (!subscribed)
                 {
                     graphic.RegisterDirtyVerticesCallback(invalidate);
@@ -129,6 +170,11 @@ namespace QVVR
                     graphic.RegisterDirtyLayoutCallback(invalidate);
                 }
                 subscriptions[graphic] = scan;
+                if (!active) continue; // Covered by its inactive subtree root.
+                graphics.Add(graphic);
+                graphicEnabled.Add(graphic.enabled);
+                graphicColors.Add(graphic.canvasRenderer.GetColor());
+                graphicAlphas.Add(graphic.canvasRenderer.GetAlpha());
                 // Graphic.material is VIRTUAL. TMP_SubMeshUI's getter can
                 // instantiate a material (or throw while an inactive submesh
                 // has no source). Never call third-party material getters.
@@ -137,6 +183,9 @@ namespace QVVR
                 System.Type type = graphic.GetType();
                 bool builtIn = type == typeof(Image) || type == typeof(RawImage) || type == typeof(Text);
                 graphicBuiltIn.Add(builtIn);
+                Material custom = builtIn ? graphic.material : null;
+                graphicStaticMaterials.Add(custom != null && custom != graphic.defaultMaterial && custom.shader != null &&
+                    StaticCustomShader(custom.shader.name) ? custom : null); // Shader.name allocates: cold scan only.
                 UiMaterialWatch watch = null;
                 if (!builtIn)
                 {
@@ -149,11 +198,18 @@ namespace QVVR
                 }
                 materialWatches.Add(watch);
             }
+            Transform root = canvas.transform;
             for (int i = 0; i < foundRects.Count; i++)
             {
                 RectTransform t = foundRects[i];
+                if (!t.gameObject.activeInHierarchy)
+                {
+                    // Topmost inactive object only; its descendants follow it.
+                    if (t == root || t.parent == null || t.parent.gameObject.activeInHierarchy) inactiveRoots.Add(t);
+                    continue;
+                }
                 poses.Add(new Pose { Transform = t, Position = t.localPosition, Rotation = t.localRotation,
-                    Scale = t.localScale, Rect = t.rect, Active = t.gameObject.activeInHierarchy });
+                    Scale = t.localScale, Rect = t.rect, Active = true });
             }
             for (int i = 0; i < foundGroups.Count; i++)
             {
@@ -165,9 +221,17 @@ namespace QVVR
         }
         internal bool NeedsCapture()
         {
-            if (suspended || dirty || Continuous()) return true;
+            if (suspended || dirty || stale || Continuous()) return true;
+            if (Changed()) return true;
+            Reuses++;
+            return false;
+        }
+        // Live UI differs from the snapshot of the last capture.
+        private bool Changed()
+        {
             for (int i = 0; i < graphics.Count; i++)
-                if (graphics[i] == null || graphics[i].enabled != graphicEnabled[i] || graphics[i].canvasRenderer.GetColor() != graphicColors[i]) return true;
+                if (graphics[i] == null || graphics[i].enabled != graphicEnabled[i] || graphics[i].canvasRenderer.GetColor() != graphicColors[i] ||
+                    graphics[i].canvasRenderer.GetAlpha() != graphicAlphas[i]) return true;
             for (int i = 0; i < canvases.Count; i++) if (canvases[i] == null || canvases[i].enabled != canvasEnabled[i]) return true;
             for (int i = 0; i < groups.Count; i++)
             {
@@ -180,7 +244,11 @@ namespace QVVR
                 if (t == null || t.gameObject.activeInHierarchy != state.Active || t.localPosition != state.Position ||
                     t.localRotation != state.Rotation || t.localScale != state.Scale || t.rect != state.Rect) return true;
             }
-            Reuses++;
+            for (int i = 0; i < inactiveRoots.Count; i++)
+            {
+                Transform t = inactiveRoots[i];
+                if (t == null || t.gameObject.activeInHierarchy) { stale = true; return true; }
+            }
             return false;
         }
         private bool Continuous()
@@ -191,13 +259,19 @@ namespace QVVR
             {
                 Graphic graphic = graphics[i];
                 if (graphic == null || !graphic.enabled || !graphic.gameObject.activeInHierarchy) continue;
+                bool blocks;
                 if (graphicBuiltIn[i])
                 {
-                    if (graphic.material != graphic.defaultMaterial) { ContinuousReason = 2; return true; }
-                    continue;
+                    Material material = graphic.material;
+                    blocks = material != graphic.defaultMaterial && material != graphicStaticMaterials[i];
                 }
-                UiMaterialWatch watch = materialWatches[i];
-                if (watch == null || watch.Continuous()) { ContinuousReason = 2; return true; }
+                else
+                {
+                    UiMaterialWatch watch = materialWatches[i];
+                    blocks = watch == null || watch.Continuous();
+                }
+                // Visibility is checked only for would-be blockers (two engine calls).
+                if (blocks && Visible(graphic)) { ContinuousReason = 2; return true; }
             }
             for (int i = 0; i < animators.Count; i++)
             {
@@ -216,6 +290,7 @@ namespace QVVR
             {
                 graphicEnabled[i] = graphics[i].enabled;
                 graphicColors[i] = graphics[i].canvasRenderer.GetColor();
+                graphicAlphas[i] = graphics[i].canvasRenderer.GetAlpha();
             }
             for (int i = 0; i < canvases.Count; i++) if (canvases[i] != null) canvasEnabled[i] = canvases[i].enabled;
             for (int i = 0; i < groups.Count; i++)
@@ -247,10 +322,34 @@ namespace QVVR
         }
         private void ClearSnapshots()
         {
-            graphics.Clear(); graphicEnabled.Clear(); graphicBuiltIn.Clear(); materialWatches.Clear(); graphicColors.Clear();
-            canvases.Clear(); canvasEnabled.Clear(); poses.Clear(); groups.Clear(); animators.Clear(); dirty = true;
+            graphics.Clear(); graphicEnabled.Clear(); graphicBuiltIn.Clear(); graphicStaticMaterials.Clear(); materialWatches.Clear(); graphicColors.Clear(); graphicAlphas.Clear();
+            canvases.Clear(); canvasEnabled.Clear(); poses.Clear(); inactiveRoots.Clear(); groups.Clear(); animators.Clear(); dirty = true; stale = false;
         }
-        internal void Clear() { Unwatch(); cachedMaterialWatches.Clear(); expiredMaterialWatches.Clear(); expiredSubscriptions.Clear(); suspended = false; nextProbe = 0f; }
+        internal void Clear() { Unwatch(); stale = false; RestoreParticles(); cachedMaterialWatches.Clear(); expiredMaterialWatches.Clear(); expiredSubscriptions.Clear(); suspended = false; nextProbe = 0f; }
+        private void RestoreParticles()
+        {
+            for (int i = 0; i < hiddenParticles.Count; i++) if (hiddenParticles[i] != null) hiddenParticles[i].enabled = true;
+            hiddenParticles.Clear();
+        }
+        // QV keeps hidden panels (loading image, achievement gauges) enabled with
+        // zero alpha. Their materials cannot change the capture while invisible;
+        // becoming visible changes a snapshotted color, alpha or CanvasGroup.
+        private static bool Visible(Graphic graphic)
+        {
+            if (graphic.color.a <= 0f) return false;
+            CanvasRenderer renderer = graphic.canvasRenderer;
+            return !renderer.cull && renderer.GetInheritedAlpha() > 0f;
+        }
+        // QV's HUD sparkles (fairy acquire/clear effects) use Coffee UIParticle.
+        private static bool IsDecorativeParticle(System.Type type)
+        {
+            return type.FullName == "Coffee.UIExtensions.UIParticle";
+        }
+        // Custom built-in Image materials without time-driven animation.
+        private static bool StaticCustomShader(string name)
+        {
+            return name == "ERB/Particles/Add_CenterGlow" || name == "UI/Default-SoftMask";
+        }
         // A cache is optional, scene/controller preparation is not. Keep this
         // circuit breaker for the session, including across maintenance scans.
         internal void DisableReuse() { Failed = true; Clear(); }

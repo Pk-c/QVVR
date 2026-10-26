@@ -27,6 +27,10 @@ digital signature. A .sha256 sidecar is checked when a release ZIP is given.
 Unknown files, linked content and incompatible shared loader files are rejected.
 Close QV before every install, update or uninstall.
 
+A first install (no QVVR config on the Frame yet) uses QVVR-Frame-Defaults.cfg,
+the Steam Frame reference profile beside this script: passthrough, render scale
+1.10, MSAA 2x, back-face cut surfaces, diorama size/placement. Edit that file
+before installing to change the starting profile.
 Existing QVVR settings and other mods are kept. Differing shared BepInEx/Doorstop
 files are NEVER overwritten automatically: review an existing loader manually.
 QV.exe and QV_Data are never copied, patched or removed.

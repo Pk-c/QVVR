@@ -2,6 +2,7 @@
 #define XR_USE_GRAPHICS_API_D3D11
 #include "OpenXrBackend.h"
 #include "EyeCopyShader.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -52,6 +53,27 @@ int colorDecodeMode = 0;
 ID3D11ShaderResourceView *sources[2] = {};
 ID3D11Texture2D *sourceTextures[2] = {};
 int sourceDecodeMode[2] = {};
+int64_t swapchainFormat = 0;
+// HUD compositor quad: its own single-level swapchain, near display density,
+// rewritten only when the HUD content version changes. Runtimes keep showing
+// the most recently released image, so unchanged HUD frames copy nothing.
+// Mipmapped swapchains are avoided: Proton's D3D11 interop on Steam Frame
+// showed stale/corrupt lower levels. The GPU resamples the mipmapped capture.
+constexpr uint32_t HudMaxWidth = 2048; // ~21 px/deg over the default ~98 deg HUD.
+struct HudQuad
+{
+    XrSwapchain swapchain = XR_NULL_HANDLE;
+    std::vector<XrSwapchainImageD3D11KHR> images;
+    std::vector<ID3D11RenderTargetView *> targets; // one per swapchain image
+    ID3D11ShaderResourceView *source = nullptr; // whole HUD mip chain, trilinear
+    ID3D11Texture2D *texture = nullptr;
+    ID3D11VertexShader *vertex = nullptr;
+    ID3D11PixelShader *pixel = nullptr;
+    ID3D11SamplerState *sampler = nullptr;
+    uint32_t width = 0, height = 0, version = 0, maxWidth = HudMaxWidth;
+    bool flip = false, released = false;
+} hud;
+std::atomic<int> hudStatus(0);
 struct Eye
 {
     XrSwapchain swapchain = XR_NULL_HANDLE;
@@ -78,10 +100,24 @@ template <typename T> void Release(T *&pointer)
         pointer = nullptr;
     }
 }
+void DestroyHud()
+{
+    for (auto target : hud.targets) if (target) target->Release();
+    hud.targets.clear(); hud.images.clear();
+    if (hud.swapchain) xrDestroySwapchain(hud.swapchain);
+    hud.swapchain = XR_NULL_HANDLE;
+    Release(hud.source); Release(hud.texture);
+    Release(hud.vertex); Release(hud.pixel); Release(hud.sampler);
+    hud.width = hud.height = hud.version = 0;
+    hud.flip = hud.released = false;
+}
 void Destroy()
 {
     pacingStats.ReadAndReset(); framePreparedMs = framePeriodMs = 0;
     selected.store(false);
+    DestroyHud();
+    hudStatus.store(0);
+    swapchainFormat = 0;
     for (auto &eye : eyes)
     {
         if (eye.acquired && eye.swapchain)
@@ -390,6 +426,7 @@ bool Initialize(ID3D11Texture2D *left, float scale)
         lastError.store(XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED);
         return false;
     }
+    swapchainFormat = format;
     XrViewConfigurationView recommendations[2] = {{XR_TYPE_VIEW_CONFIGURATION_VIEW}, {XR_TYPE_VIEW_CONFIGURATION_VIEW}};
     if (!Check(xrEnumerateViewConfigurationViews(instance, system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
         2, &count, recommendations)) || count != 2) return false;
@@ -562,7 +599,139 @@ bool CopyEye(int index, ID3D11Texture2D *source, bool flip, bool opaqueScene)
     eye.acquired = eye.waited = false;
     return true;
 }
+// HUD failures never use Check(): they must not look like an XR session error.
+// The caller drops the quad and the managed side draws the HUD in the eyes.
+bool CreateHudShaders(bool flip, int decode)
+{
+    const char *vs = HudResampleVertexSource();
+    ID3DBlob *blob = nullptr;
+    if (FAILED(D3DCompile(vs, strlen(vs), nullptr, nullptr, nullptr, "main", "vs_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, nullptr)))
+        return false;
+    HRESULT hr = device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &hud.vertex);
+    blob->Release();
+    if (FAILED(hr)) return false;
+    std::string ps = HudResampleSource(flip, decode);
+    blob = nullptr;
+    if (FAILED(D3DCompile(ps.data(), ps.size(), nullptr, nullptr, nullptr, "main", "ps_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, nullptr)))
+        return false;
+    hr = device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &hud.pixel);
+    blob->Release();
+    if (FAILED(hr)) return false;
+    D3D11_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler.MaxLOD = D3D11_FLOAT32_MAX;
+    return SUCCEEDED(device->CreateSamplerState(&sampler, &hud.sampler));
+}
+bool CreateHud(ID3D11Texture2D *texture, bool flip)
+{
+    D3D11_TEXTURE2D_DESC desc = {};
+    texture->GetDesc(&desc);
+    if (!swapchainFormat || !desc.Width || !desc.Height || desc.ArraySize != 1 || desc.SampleDesc.Count != 1) return false;
+    // Near display density: the compositor then samples ~1:1 and needs no mips.
+    uint32_t width = (std::min)(desc.Width, hud.maxWidth);
+    uint32_t height = (std::max)(1u, static_cast<uint32_t>((static_cast<uint64_t>(desc.Height) * width + desc.Width / 2) / desc.Width));
+    XrSwapchainCreateInfo swap = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    swap.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    swap.format = swapchainFormat;
+    swap.sampleCount = 1;
+    swap.width = width;
+    swap.height = height;
+    swap.faceCount = swap.arraySize = swap.mipCount = 1;
+    if (XR_FAILED(xrCreateSwapchain(session, &swap, &hud.swapchain))) { hud.swapchain = XR_NULL_HANDLE; return false; }
+    hud.width = width;
+    hud.height = height;
+    uint32_t count = 0;
+    if (XR_FAILED(xrEnumerateSwapchainImages(hud.swapchain, 0, &count, nullptr)) || !count) return false;
+    hud.images.resize(count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+    if (XR_FAILED(xrEnumerateSwapchainImages(hud.swapchain, count, &count,
+                                             reinterpret_cast<XrSwapchainImageBaseHeader *>(hud.images.data()))))
+        return false;
+    hud.targets.assign(count, nullptr);
+    for (uint32_t image = 0; image < count; ++image)
+        if (FAILED(device->CreateRenderTargetView(hud.images[image].texture, nullptr, &hud.targets[image]))) return false;
+    // Same encoded-byte read and color decode as the eye copy, all mips visible.
+    D3D11_SHADER_RESOURCE_VIEW_DESC view = {};
+    view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    view.Texture2D.MipLevels = static_cast<UINT>(-1);
+    view.Format = desc.Format;
+    if (view.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) view.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    if (view.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) view.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    int decode = (view.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || view.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) ? 0 : colorDecodeMode;
+    if (FAILED(device->CreateShaderResourceView(texture, &view, &hud.source)) || !CreateHudShaders(flip, decode)) return false;
+    texture->AddRef();
+    hud.texture = texture;
+    hud.flip = flip;
+    return true;
+}
+bool CopyHud()
+{
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo acquire = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_FAILED(xrAcquireSwapchainImage(hud.swapchain, &acquire, &index)) || index >= hud.images.size()) return false;
+    XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait.timeout = XR_INFINITE_DURATION;
+    if (XR_FAILED(xrWaitSwapchainImage(hud.swapchain, &wait))) return false;
+    ID3DDeviceContextState *unity = nullptr;
+    context->SwapDeviceContextState(copyState, &unity);
+    context->OMSetRenderTargets(1, &hud.targets[index], nullptr);
+    D3D11_VIEWPORT viewport = {0, 0, static_cast<float>(hud.width), static_cast<float>(hud.height), 0, 1};
+    context->RSSetViewports(1, &viewport);
+    context->IASetInputLayout(nullptr);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->VSSetShader(hud.vertex, nullptr, 0);
+    context->PSSetShader(hud.pixel, nullptr, 0);
+    context->PSSetShaderResources(0, 1, &hud.source);
+    context->PSSetSamplers(0, 1, &hud.sampler);
+    context->Draw(3, 0);
+    context->Flush();
+    context->SwapDeviceContextState(unity, nullptr);
+    unity->Release();
+    XrSwapchainImageReleaseInfo release = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    if (XR_FAILED(xrReleaseSwapchainImage(hud.swapchain, &release))) return false;
+    hud.released = true;
+    return true;
+}
+bool Finite(float value) { return std::isfinite(value) != 0; }
+// Graphics thread, after both eye copies. Returns true when the quad is valid
+// for this frame's xrEndFrame; never fails or cancels the projection layer.
+bool PrepareHudLayer(ID3D11Texture2D *texture, const HudLayer *layer, bool flip, XrCompositionLayerQuad &quad)
+{
+    if (!texture || !layer || !layer->visible || hudStatus.load() < 0) return false;
+    if (!Finite(layer->px) || !Finite(layer->py) || !Finite(layer->pz) || !Finite(layer->width) || !Finite(layer->height) ||
+        layer->width <= 0 || layer->height <= 0)
+        return false;
+    float length = sqrtf(layer->qx * layer->qx + layer->qy * layer->qy + layer->qz * layer->qz + layer->qw * layer->qw);
+    if (!Finite(length) || length < .0001f) return false;
+    bool fresh = hud.texture != texture || hud.flip != flip;
+    if (fresh)
+    {
+        uint32_t maxWidth = hud.maxWidth;
+        DestroyHud();
+        hud.maxWidth = maxWidth;
+        if (!CreateHud(texture, flip)) { DestroyHud(); hudStatus.store(-1); return false; }
+    }
+    if (fresh || !hud.released || hud.version != layer->version)
+    {
+        if (!CopyHud()) { DestroyHud(); hudStatus.store(-1); return false; }
+        hud.version = layer->version;
+    }
+    hudStatus.store(1);
+    quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; // Premultiplied HUD capture.
+    quad.space = stage;
+    quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    quad.subImage.swapchain = hud.swapchain;
+    quad.subImage.imageRect.offset = {0, 0};
+    quad.subImage.imageRect.extent = {static_cast<int32_t>(hud.width), static_cast<int32_t>(hud.height)};
+    quad.subImage.imageArrayIndex = 0;
+    quad.pose.orientation = {layer->qx / length, layer->qy / length, layer->qz / length, layer->qw / length};
+    quad.pose.position = {layer->px, layer->py, layer->pz};
+    quad.size = {layer->width, layer->height};
+    return true;
+}
 } // namespace
+int OpenXrHudStatus() { return hudStatus.load(); }
+void SetOpenXrHudMaxWidth(uint32_t width) { hud.maxWidth = width ? width : HudMaxWidth; }
 void ConfigureOpenXr(bool value)
 {
     requested.store(value);
@@ -740,12 +909,15 @@ int PrepareOpenXrFrame(OpenXrFrame &snapshot)
     framePreparedMs = SteadyMilliseconds();
     return true;
 }
-bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::HmdMatrix34_t &, bool flip, bool opaqueScene)
+bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::HmdMatrix34_t &, bool flip, bool opaqueScene,
+                       ID3D11Texture2D *hudTexture, const HudLayer *hudLayer)
 {
     if (!frameBegun)
         return false;
     double copyStarted = SteadyMilliseconds();
     bool copied = shouldRender && CopyEye(0, left, flip, opaqueScene) && CopyEye(1, right, flip, opaqueScene);
+    XrCompositionLayerQuad quad = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+    bool hudVisible = copied && PrepareHudLayer(hudTexture, hudLayer, flip, quad);
     XrCompositionLayerProjectionView views[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                                  {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     for (int i = 0; i < 2; ++i)
@@ -763,12 +935,14 @@ bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::
     // ALPHA_BLEND stays active. Only this exact frame's full-scene menu layer
     // ignores source alpha; the next gameplay frame retains passthrough.
     projection.layerFlags = opaqueScene ? 0 : XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    // The HUD quad composites over the scene, like the former in-eye overlay.
     const XrCompositionLayerBaseHeader *layers[] = {
-        reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projection)};
+        reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projection),
+        reinterpret_cast<const XrCompositionLayerBaseHeader *>(&quad)};
     XrFrameEndInfo end = {XR_TYPE_FRAME_END_INFO};
     end.displayTime = displayTime;
     end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND;
-    end.layerCount = copied ? 1 : 0;
+    end.layerCount = copied ? (hudVisible ? 2 : 1) : 0;
     end.layers = copied ? layers : nullptr;
     bool ended = Check(xrEndFrame(session, &end));
     if (ended && copied) pacingStats.Record(SteadyMilliseconds(), framePreparedMs, copyStarted, framePeriodMs, frameFocused);

@@ -1,6 +1,7 @@
 #include "EyeCopyShader.h"
 #include "ShaderClip.h"
 #include <cassert>
+#include <utility>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -10,7 +11,6 @@
 #include <windows.h>
 #include <d3dcompiler.h>
 static std::atomic<bool> trackAllocations(false);
-static bool enableDiagnosticCapture = true;
 static std::atomic<unsigned> hotAllocations(0);
 void *operator new(std::size_t size) {
     if (trackAllocations.load()) hotAllocations.fetch_add(1);
@@ -68,7 +68,6 @@ static void CheckUnusedPositionSignature(ID3DBlob *original)
 static void RenderTest(ID3D11Device *device, ID3D11DeviceContext *context)
 {
     // Synthetic WARP test targets only, never headset/game eye textures.
-    qvvr::ConfigureShaderDiagnostics(enableDiagnosticCapture);
     assert(qvvr::InstallShaderClip(device));
     D3D11_TEXTURE2D_DESC td = {};
     td.Width = td.Height = 32;
@@ -298,13 +297,6 @@ static void RenderTest(ID3D11Device *device, ID3D11DeviceContext *context)
     // Real perspective depth: translated camera/anchor, small near plane,
     // and both D3D forward and reversed Z. Earlier tests had homogeneous w=1
     // and could not validate the inverse projection used by gameplay.
-    // Bind a recognizable VS buffer to verify the one-shot diagnostic uses
-    // the active GPU contents, not a CPU-side copy of the expected projection.
-    const float diagnosticValue[4] = {17.f, 23.f, 41.f, 59.f};
-    D3D11_SUBRESOURCE_DATA diagnosticInitial = {diagnosticValue, 0, 0};
-    ID3D11Buffer *diagnosticBuffer = nullptr;
-    assert(SUCCEEDED(device->CreateBuffer(&bd, &diagnosticInitial, &diagnosticBuffer)));
-    context->VSSetConstantBuffers(0, 1, &diagnosticBuffer);
     auto positionCode = Compile("float4 main(float4 p:SV_Position):SV_Target{return float4(0,p.w>0?1:0,0,0);}", "ps_4_0");
     ID3D11PixelShader *positionGreen = nullptr;
     assert(SUCCEEDED(device->CreatePixelShader(positionCode->GetBufferPointer(), positionCode->GetBufferSize(), nullptr, &positionGreen)));
@@ -366,45 +358,6 @@ static void RenderTest(ID3D11Device *device, ID3D11DeviceContext *context)
         code->Release();
     }
     context->Flush();
-    if (enableDiagnosticCapture)
-    {
-    bool diagnosticWritten = false;
-    for (int attempt = 0; attempt < 1000 && !diagnosticWritten; ++attempt)
-    {
-        qvvr::BeginShaderClip(parameters); // Production uses the next frames.
-        qvvr::EndShaderClip();
-        diagnosticWritten = qvvr::WriteShaderClipDiagnostic(L"artifacts/shader-clip-tests/cylinder-diagnostic.bin");
-        if (!diagnosticWritten) Sleep(1); // Test only: at most one second.
-    }
-    assert(diagnosticWritten);
-    FILE *diagnosticFile = nullptr;
-    assert(_wfopen_s(&diagnosticFile, L"artifacts/shader-clip-tests/cylinder-diagnostic.bin", L"rb") == 0);
-    // Header: magic/version + ClipParameters + viewport + sizes + firstConstants.
-    assert(fseek(diagnosticFile, 8 + 80 + 24 + 14 * 4 * 2, SEEK_SET) == 0);
-    float actualDiagnostic[4] = {};
-    assert(fread(actualDiagnostic, sizeof(actualDiagnostic), 1, diagnosticFile) == 1);
-    assert(memcmp(actualDiagnostic, diagnosticValue, sizeof(diagnosticValue)) == 0);
-    assert(fseek(diagnosticFile, 8 + 80 + 24 + 14 * 4 * 2 + 14 * 65536, SEEK_SET) == 0);
-    unsigned pixelHeader[4] = {};
-    assert(fread(pixelHeader, sizeof(pixelHeader), 1, diagnosticFile) == 1);
-    assert(pixelHeader[0] == 13 && pixelHeader[1] == 0 && pixelHeader[2] == 80 && pixelHeader[3] == 1);
-    qvvr::ClipParameters actualPixelParameters = {};
-    assert(fread(&actualPixelParameters, sizeof(actualPixelParameters), 1, diagnosticFile) == 1);
-    assert(actualPixelParameters.limits[0] == 14.5f * 14.5f && actualPixelParameters.limits[1] == 5.25f);
-    fclose(diagnosticFile);
-    puts("GPU constant-buffer diagnostic: active VS data captured; no eye texture readback.");
-    }
-    else
-    {
-        unsigned buffers = 0, shaders = 0;
-        qvvr::ShaderDiagnosticTestStats(buffers, shaders);
-        assert(buffers == 0 && shaders == 0);
-        assert(!qvvr::WriteShaderClipDiagnostic(L"artifacts/shader-clip-tests/disabled.bin"));
-        puts("Diagnostic disabled: zero staging buffers, zero retained diagnostic shader bytecodes; clipping unchanged.");
-    }
-    ID3D11Buffer *noBuffer = nullptr;
-    context->VSSetConstantBuffers(0, 1, &noBuffer);
-    diagnosticBuffer->Release();
     positionGreen->Release();
     positionCode->Release();
     unusedPositionGreen->Release();
@@ -586,9 +539,19 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
     ID3D11PixelShader *ps = nullptr;
     assert(SUCCEEDED(device->CreatePixelShader(psCode->GetBufferPointer(),psCode->GetBufferSize(),nullptr,&ps)));
     unsigned checks = 0;
+    unsigned extraReplays = 0, extraComposites = 0;
+    // stencil=0: D32 eye depth -> private-target fallback. stencil=1: D24S8 like
+    // Unity eyes -> inline same-pass stencil count. Identical expected pixels.
+    // capMode=1 (back-face): D24S8 marks culled faces in the eye stencil with no
+    // replay; D32 has nowhere to mark and must fall back to the exact path.
+    unsigned backFaceBefore = qvvr::GetCapBackFaceEyes();
+    for (int capMode=0;capMode<2;++capMode)
+    for (int stencil=0;stencil<2;++stencil)
     for (int perspective=0;perspective<2;++perspective) for (int reverse=0;reverse<2;++reverse) for (int plane=0;plane<2;++plane)
         for (int ms=1;ms<=2;++ms) for (int transparent=0;transparent<2;++transparent)
     {
+        qvvr::SetCapMode(capMode);
+        const bool backFace = capMode==1&&stencil;
         context->ClearState();
         D3D11_TEXTURE2D_DESC td = {};
         td.Width=td.Height=32;td.MipLevels=td.ArraySize=1;td.SampleDesc.Count=ms;
@@ -597,7 +560,7 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
         assert(SUCCEEDED(device->CreateTexture2D(&td,nullptr,&color)));
         ID3D11RenderTargetView *target=nullptr;
         assert(SUCCEEDED(device->CreateRenderTargetView(color,nullptr,&target)));
-        td.Format=DXGI_FORMAT_D32_FLOAT;td.BindFlags=D3D11_BIND_DEPTH_STENCIL;
+        td.Format=stencil?DXGI_FORMAT_D24_UNORM_S8_UINT:DXGI_FORMAT_D32_FLOAT;td.BindFlags=D3D11_BIND_DEPTH_STENCIL;
         assert(SUCCEEDED(device->CreateTexture2D(&td,nullptr,&depth)));
         ID3D11DepthStencilView *dsv=nullptr;
         assert(SUCCEEDED(device->CreateDepthStencilView(depth,nullptr,&dsv)));
@@ -607,8 +570,13 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
         assert(SUCCEEDED(device->CreateTexture2D(&td,nullptr,&read)));
         char vsSource[512];
         float pa=reverse?-.05f/(50-.05f):50/(50-.05f),pb=reverse?.05f*50/(50-.05f):-.05f*50/(50-.05f);
-        if(perspective)sprintf_s(vsSource,"float4 main(float3 v:POSITION):SV_Position{return float4(v.xy,%0.9g*(v.z+2)+%0.9g,v.z+2);}",pa,pb);
-        else sprintf_s(vsSource,"float4 main(float3 v:POSITION):SV_Position{return float4(v.x,v.y,%s,1);}",
+        // linkage: SV_Position NOT in the first output register, as in many
+        // Unity v2f structs; the inline count PS reads only SV_Position.
+        bool linkage=stencil&&transparent;
+        if(perspective)sprintf_s(vsSource,linkage?"struct O{float2 t:TEXCOORD0;float4 p:SV_Position;};O main(float3 v:POSITION){O o;o.t=v.xy;o.p=float4(v.xy,%0.9g*(v.z+2)+%0.9g,v.z+2);return o;}":
+            "float4 main(float3 v:POSITION):SV_Position{return float4(v.xy,%0.9g*(v.z+2)+%0.9g,v.z+2);}",pa,pb);
+        else sprintf_s(vsSource,linkage?"struct O{float2 t:TEXCOORD0;float4 p:SV_Position;};O main(float3 v:POSITION){O o;o.t=v.xy;o.p=float4(v.x,v.y,%s,1);return o;}":
+            "float4 main(float3 v:POSITION):SV_Position{return float4(v.x,v.y,%s,1);}",
             reverse ? "1-(v.z+2)/4" : "(v.z+2)/4");
         auto vsCode=Compile(vsSource,"vs_4_0"); ID3D11VertexShader *vs=nullptr;
         assert(SUCCEEDED(device->CreateVertexShader(vsCode->GetBufferPointer(),vsCode->GetBufferSize(),nullptr,&vs)));
@@ -691,14 +659,18 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
                 if(actual!=ps)printf("GPU caps state failed enabled=%d instanced=%d reverse=%d plane=%d ms=%d alpha=%d actual=%p expected=%p\n",enable,instanced,reverse,plane,ms,transparent,actual,ps);
                 assert(actual==ps);actual->Release();
                 UINT ref;ID3D11DepthStencilState *actualDepth=nullptr;context->OMGetDepthStencilState(&actualDepth,&ref);
-                assert(actualDepth==depthState&&ref==23);actualDepth->Release();}
+                assert(actualDepth==depthState&&ref==23);actualDepth->Release();
+                ID3D11RasterizerState *actualRaster=nullptr;context->RSGetState(&actualRaster);
+                assert(!actualRaster);} // Requested (default) rasterizer, not the no-cull variant.
         };
+        unsigned inlineBefore=0,privateBefore=0; bool conflictBefore=false;
+        qvvr::GetCapModeStats(inlineBefore,privateBefore,conflictBefore);
         for(int mode=0;mode<7;++mode)
         {
             unsigned beforeDraws=0; qvvr::GetCapStats(available,registered,beforeDraws,composed);
             frame(mode!=0,mode==2,mode==3,mode==4?&skip:mode==5?&stale:nullptr);
             qvvr::GetCapStats(available,registered,replayed,composed);
-            assert(replayed-beforeDraws == (mode==0?0u:!plane||mode==4?1u:3u));
+            assert(replayed-beforeDraws == (mode==0||backFace?0u:!plane||mode==4?1u:3u));
             if(ms>1)context->ResolveSubresource(resolved,0,color,0,DXGI_FORMAT_R8G8B8A8_UNORM);
             else context->CopyResource(resolved,color);
             context->CopyResource(read,resolved);
@@ -720,13 +692,17 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
                         enter=fmaxf(enter,fminf(t0,t1));leave=fminf(leave,fmaxf(t0,t1));}
                     if(leave<enter||leave<0)return 0;
                     bool cut=false,inside=false;
+                    float nearest=1e30f;int seen=0; // Back-face mode: nearest clipped-in face wins.
                     for(const auto &box:bounds){float begin=-1e20f,end=1e20f;
                         for(int axis=0;axis<3;++axis){if(fabsf(ray[axis])<1e-12f){if(origin[axis]<box[axis*2]||origin[axis]>box[axis*2+1])end=-1e20f;}
                             else{float t0=(box[axis*2]-origin[axis])/ray[axis],t1=(box[axis*2+1]-origin[axis])/ray[axis];
                                 begin=fmaxf(begin,fminf(t0,t1));end=fminf(end,fmaxf(t0,t1));}}
                         if(end<begin||end<0)continue;
                         if(begin<enter&&end>enter&&enter>0)cut=true;
-                        if(begin>=enter&&begin<=leave)inside=true;}
+                        if(begin>=enter&&begin<=leave)inside=true;
+                        if(begin>=enter&&begin<=leave&&begin<nearest){nearest=begin;seen=2;}
+                        if(end>=enter&&end<=leave&&end<nearest){nearest=end;seen=1;}}
+                    if(backFace&&mode!=0)return seen;
                     return cut&&mode!=0?1:inside?2:0;
                 };
                 int expect=expected(x+.5f,y+.5f);
@@ -736,11 +712,76 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
                 auto pixel=static_cast<unsigned char*>(mapped.pData)+y*mapped.RowPitch+x*4;
                 unsigned r=expect==2?255:0,g=expect==0&&!transparent?255:0,a=expect!=0||!transparent?255:0;
                 if(pixel[0]!=r||pixel[1]!=g||pixel[2]!=0||pixel[3]!=a)
-                {printf("GPU caps failed perspective=%d reverse=%d plane=%d ms=%d alpha=%d mode=%d pixel=%u,%u got=%u,%u,%u,%u expected=%u,%u,0,%u\n",
-                    perspective,reverse,plane,ms,transparent,mode,x,y,pixel[0],pixel[1],pixel[2],pixel[3],r,g,a);std::exit(5);}
+                {printf("GPU caps failed capMode=%d stencil=%d perspective=%d reverse=%d plane=%d ms=%d alpha=%d mode=%d pixel=%u,%u got=%u,%u,%u,%u expected=%u,%u,0,%u\n",
+                    capMode,stencil,perspective,reverse,plane,ms,transparent,mode,x,y,pixel[0],pixel[1],pixel[2],pixel[3],r,g,a);std::exit(5);}
                 ++checks;
             }
             context->Unmap(read,0);
+        }
+        {
+            unsigned inlineAfter=0,privateAfter=0; bool conflict=false;
+            qvvr::GetCapModeStats(inlineAfter,privateAfter,conflict);
+            if(backFace)assert(inlineAfter==inlineBefore&&privateAfter==privateBefore&&!conflict);
+            else if(stencil)assert(inlineAfter>inlineBefore&&privateAfter==privateBefore&&!conflict);
+            else assert(privateAfter>privateBefore&&inlineAfter==inlineBefore);
+        }
+        if(backFace&&!perspective&&!plane&&ms==1)
+        {
+            // Game stencil in a world draw: exact (private) caps take over at
+            // once, before anything is marked, and stay for the scene.
+            D3D11_DEPTH_STENCIL_DESC gameStencil={};gameStencil.DepthEnable=TRUE;gameStencil.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ALL;
+            gameStencil.DepthFunc=reverse?D3D11_COMPARISON_GREATER_EQUAL:D3D11_COMPARISON_LESS_EQUAL;gameStencil.StencilEnable=TRUE;
+            gameStencil.StencilReadMask=gameStencil.StencilWriteMask=0xff;
+            gameStencil.FrontFace.StencilFunc=gameStencil.BackFace.StencilFunc=D3D11_COMPARISON_ALWAYS;
+            gameStencil.FrontFace.StencilPassOp=gameStencil.BackFace.StencilPassOp=D3D11_STENCIL_OP_KEEP;
+            gameStencil.FrontFace.StencilFailOp=gameStencil.BackFace.StencilFailOp=D3D11_STENCIL_OP_KEEP;
+            gameStencil.FrontFace.StencilDepthFailOp=gameStencil.BackFace.StencilDepthFailOp=D3D11_STENCIL_OP_KEEP;
+            ID3D11DepthStencilState *stencilState=nullptr;assert(SUCCEEDED(device->CreateDepthStencilState(&gameStencil,&stencilState)));
+            unsigned r0=0,c0=0,i0=0,p0=0,r1=0,c1=0,i1=0,p1=0; bool conflict=false;
+            unsigned marked=qvvr::GetCapBackFaceEyes();
+            qvvr::GetCapStats(available,registered,r0,c0);qvvr::GetCapModeStats(i0,p0,conflict);
+            std::swap(depthState,stencilState);frame(true,false,false);std::swap(depthState,stencilState);
+            frame(true,false,false);
+            qvvr::GetCapModeStats(i1,p1,conflict);assert(conflict&&p1==p0+2&&i1==i0&&qvvr::GetCapBackFaceEyes()==marked);
+            qvvr::ClearCapMeshes();
+            for (int box = 0; box < 3; ++box)
+            {
+                qvvr::CapBounds b = {{bounds[box][0],bounds[box][2],bounds[box][4]}, {bounds[box][1],bounds[box][3],bounds[box][5]}};
+                qvvr::RegisterCapMeshBounds(indexBuffers[box], b);
+            }
+            frame(true,false,false);assert(qvvr::GetCapBackFaceEyes()==marked+1); // New scene: back-face again.
+            qvvr::GetCapStats(available,registered,r1,c1);extraReplays+=r1-r0;extraComposites+=c1-c0;
+            stencilState->Release();
+        }
+        if(capMode==0&&stencil&&!perspective&&!plane&&ms==1)
+        {
+            // A game draw using stencil hands the scene to the private fallback
+            // immediately; the next scene registration re-enables inline.
+            D3D11_DEPTH_STENCIL_DESC gameStencil={};gameStencil.DepthEnable=TRUE;gameStencil.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ALL;
+            gameStencil.DepthFunc=reverse?D3D11_COMPARISON_GREATER_EQUAL:D3D11_COMPARISON_LESS_EQUAL;gameStencil.StencilEnable=TRUE;
+            gameStencil.StencilReadMask=gameStencil.StencilWriteMask=0xff;
+            gameStencil.FrontFace.StencilFunc=gameStencil.BackFace.StencilFunc=D3D11_COMPARISON_ALWAYS;
+            gameStencil.FrontFace.StencilPassOp=gameStencil.BackFace.StencilPassOp=D3D11_STENCIL_OP_KEEP;
+            gameStencil.FrontFace.StencilFailOp=gameStencil.BackFace.StencilFailOp=D3D11_STENCIL_OP_KEEP;
+            gameStencil.FrontFace.StencilDepthFailOp=gameStencil.BackFace.StencilDepthFailOp=D3D11_STENCIL_OP_KEEP;
+            ID3D11DepthStencilState *stencilState=nullptr;assert(SUCCEEDED(device->CreateDepthStencilState(&gameStencil,&stencilState)));
+            unsigned r0=0,c0=0,i0=0,p0=0,r1=0,c1=0,i1=0,p1=0; bool conflict=false;
+            qvvr::GetCapStats(available,registered,r0,c0);qvvr::GetCapModeStats(i0,p0,conflict);
+            std::swap(depthState,stencilState);frame(true,false,false);std::swap(depthState,stencilState);
+            frame(true,false,false); // Still private: sticky for the scene.
+            qvvr::GetCapModeStats(i1,p1,conflict);assert(conflict&&p1==p0+2&&i1==i0);
+            qvvr::ClearCapMeshes();qvvr::GetCapModeStats(i1,p1,conflict);assert(!conflict);
+            for (int box = 0; box < 3; ++box)
+            {
+                qvvr::CapBounds b = {{bounds[box][0],bounds[box][2],bounds[box][4]}, {bounds[box][1],bounds[box][3],bounds[box][5]}};
+                qvvr::RegisterCapMeshBounds(indexBuffers[box], b);
+            }
+            frame(true,false,false);qvvr::GetCapModeStats(i1,p1,conflict);assert(i1==i0+1);
+            // Rollback switch: private method on demand, inline again afterwards.
+            qvvr::SetCapInlineEnabled(false);frame(true,false,false);qvvr::SetCapInlineEnabled(true);
+            unsigned i2=0,p2=0;qvvr::GetCapModeStats(i2,p2,conflict);assert(p2==p1+1&&i2==i1);
+            qvvr::GetCapStats(available,registered,r1,c1);extraReplays+=r1-r0;extraComposites+=c1-c0;
+            stencilState->Release();
         }
         // No managed path here; no C++ allocation in warmed production hooks.
         hotAllocations.store(0);trackAllocations.store(true);
@@ -753,23 +794,25 @@ static void CylinderCapTest(ID3D11Device *device, ID3D11DeviceContext *context)
         target->Release();dsv->Release();color->Release();depth->Release();resolved->Release();read->Release();
     }
     ps->Release();psCode->Release();for(auto ib:indexBuffers)ib->Release();
+    qvvr::SetCapMode(0);
     qvvr::GetCapStats(available,registered,replayed,composed);
-    assert(registered==0&&replayed==16*(24+14)&&composed==32*14);
-    printf("GPU caps: %u pixels passed; perspective/orthographic, side/height cuts, empty exterior, untouched interior, forward/reversed Z, 1x/2x MSAA, alpha/green, disabled mode, indexed/instanced, target unbind, state restoration.\n",checks);
+    // Exact replays: 64 exact-mode configs + 32 D32 back-face fallbacks.
+    assert(registered==0&&replayed==48*(24+14)+extraReplays&&composed==128*14+extraComposites);
+    assert(qvvr::GetCapBackFaceEyes()-backFaceBefore>=32*14);
+    printf("GPU caps: %u pixels passed; inline eye-stencil and private-target modes, back-face stencil mode with D32/game-stencil fallback, SV_Position linkage, game-stencil fallback, rollback switch, perspective/orthographic, side/height cuts, empty exterior, untouched interior, forward/reversed Z, 1x/2x MSAA, alpha/green, disabled mode, indexed/instanced, target unbind, state restoration.\n",checks);
     puts("GPU caps hot hooks: zero C++ allocations across 256 warmed synthetic frames.");
     puts("GPU caps bounds: identical cut pixels with static/live interior/exterior replay omitted; stale-generation/empty snapshots fail open, caller storage is copied, moving/unbounded fallback preserved.");
 }
 int main(int argc, char **argv)
 {
-    enableDiagnosticCapture = !(argc > 1 && strcmp(argv[1], "--no-diagnostics") == 0);
     setvbuf(stdout, nullptr, _IONBF, 0);
     ID3D11Device *device = nullptr;
     ID3D11DeviceContext *context = nullptr;
     assert(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
                                        &device, nullptr, &context)));
-    if (argc > 1 && enableDiagnosticCapture)
+    if (argc > 1)
     {
-        // Optional uncommitted artifact from the real Frame diagnostic. Never
+        // Optional uncommitted captured QV shader binary. Never
         // ship or commit captured game shader binaries as test fixtures.
         FILE *file = nullptr;
         assert(fopen_s(&file, argv[1], "rb") == 0);

@@ -61,6 +61,16 @@ namespace QVVR
         [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void QVVR_GetCapStats(ref uint available, ref uint registered, ref uint replayed, ref uint composed);
         [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void QVVR_SetCapInlineEnabled(int enabled);
+        [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void QVVR_GetCapModeStats(ref uint inlineEyes, ref uint privateEyes, ref int stencilConflict);
+        [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int QVVR_GetCapInlineVariants();
+        [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void QVVR_SetCapMode(int mode);
+        [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern uint QVVR_GetCapBackFaceEyes();
+        [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void QVVR_ConfigureOpenXr(int enabled);
         [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
         internal static extern int QVVR_InitializeExclusiveOpenXr(IntPtr texture, float scale, ref uint width, ref uint height);
@@ -76,8 +86,6 @@ namespace QVVR
         internal static extern void QVVR_GetClipStats(ref uint patched, ref uint rejected, ref uint unknown, ref uint depthOnly);
         [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void QVVR_GetClipBindingStats(ref uint materialBindings, ref uint otherContextBindings);
-        [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
-        internal static extern int QVVR_WriteClipDiagnostic(string path);
         [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
         internal static extern double QVVR_GetGpuTime();
         [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
@@ -101,6 +109,16 @@ namespace QVVR
         internal static extern void QVVR_ClearEyeTextures();
 
         [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void QVVR_SetHudTexture(IntPtr texture);
+
+        [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void QVVR_SetHudLayer(int slot, ref OpenXrHudLayer layer);
+
+        // 0=not created yet, 1=ready (HUD omitted from eyes), -1=failed (HUD stays in eyes).
+        [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int QVVR_GetHudLayerStatus();
+
+        [DllImport("QVVR.Native", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void QVVR_GetSubmitState(
             ref ulong frames,
             ref int leftResult,
@@ -117,8 +135,6 @@ namespace QVVR
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate int InstallShaderClipDelegate(IntPtr texture);
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate void ConfigureDiagnosticsDelegate(int enabled);
 
         private Plugin plugin;
         private OpenVrRenderer renderer;
@@ -162,11 +178,6 @@ namespace QVVR
             // Mono may resolve P/Invokes while compiling Initialize, before its
             // EnsureNativeLibraries call executes. Resolve this startup-only call
             // from the successfully loaded handle instead of caching a failed bind.
-            IntPtr configureAddress = GetProcAddress(bridgeModule, "QVVR_ConfigureDiagnostics");
-            if (configureAddress == IntPtr.Zero) throw new EntryPointNotFoundException("QVVR_ConfigureDiagnostics");
-            ConfigureDiagnosticsDelegate configure = (ConfigureDiagnosticsDelegate)Marshal.GetDelegateForFunctionPointer(
-                configureAddress, typeof(ConfigureDiagnosticsDelegate));
-            configure(plugin.DiagnosticsEnabled.Value ? 1 : 0);
             IntPtr function = GetProcAddress(bridgeModule, "QVVR_InstallShaderClip");
             if (function == IntPtr.Zero)
                 throw new EntryPointNotFoundException("QVVR_InstallShaderClip in loaded QVVR.Native.dll");
@@ -516,7 +527,6 @@ namespace QVVR
         private readonly DioramaVisibility visibility = new DioramaVisibility();
         private bool detailedGpuTimings;
         private bool lastLeftLiquidDepth, lastRightLiquidDepth;
-        private ulong leftDepthFrames, rightDepthFrames;
         private bool capCommandsAttached;
         private readonly HudLayoutInset hudLayoutInset = new HudLayoutInset();
         private readonly DialogHudLayout dialogHudLayout = new DialogHudLayout();
@@ -544,7 +554,16 @@ namespace QVVR
         private bool initialized;
         private bool resourcesReleased;
         private bool gameplayScene;
-        private bool introScene, stereoMenuScene, stereoMenuDiagnosticPending;
+        private bool introScene, stereoMenuScene;
+        // XR HUD compositor quad (Steam Frame): see UpdateHudLayer.
+        private OpenXrHudLayer hudLayer;
+        private MeshRenderer uiPanelRenderer;
+        private uint uiContentVersion;
+        private bool hudLayerEnabled, hudLayerActive, hudLayerFailureLogged;
+        private long xrPreparedTimestamp;
+        private bool lastInlineCaps = true; // Native default.
+        private CutSurfaceMode lastCapMode = CutSurfaceMode.Exact; // Effective mode; native default.
+        private MainThreadWindow mainThreadWindow;
         private IntroPresentation introPresentation;
         private IntroMenuCompatibility introMenus;
         private FirstLevelIntroCompatibility levelIntro;
@@ -579,39 +598,16 @@ namespace QVVR
         private Vector3 dioramaAnchor;
         private Vector3 dioramaCameraAnchor;
         private bool dioramaAnchorValid;
-        // Temporary A/B probes are session-only: never overwrite saved diorama
-        // dimensions or silently claim that a diagnostic is real clipping.
-        internal int CylinderProbeMode { get; private set; } = 0;
-        private Vector3 lastCylinderCenter;
-        private Vector3 lastCylinderPivotLocal;
-        private float lastCylinderDeterminant;
-        private bool cylinderDiagnosticPrepared, cylinderDiagnosticWritten;
-        private Matrix4x4 diagnosticView, diagnosticProjection;
-        private Vector3 diagnosticCenter;
-        private Rect diagnosticRect;
-
-        internal void SetCylinderProbe(int mode)
-        {
-            CylinderProbeMode = Mathf.Clamp(mode, 0, 3);
-            Plugin.Log.LogInfo("QVVR cylinder diagnostic probe=" + CylinderProbeMode +
-                " (0=normal, 1=two passes without clipping, 2=unlimited cylinder, 3=neutral screen matrix).");
-        }
         private bool passthroughRequested;
         private OpenXrFrame xrFrame;
         private int xrPreparedUnityFrame = -1;
         private bool xrTrackingReady, xrFrameQueued;
-        private ulong xrBusyUnityFrames, xrTrackingMisses, xrQueuedFrames;
         private readonly XrInputLatch xrInput = new XrInputLatch();
         internal bool UsesOpenXr { get { return passthroughRequested; } }
         private int lastXrStatus = int.MinValue;
         private uint lastRejectedShaders;
         private uint lastUnknownShaders;
         private double lastMainRenderMilliseconds;
-        private bool stabilitySampleValid;
-        private Vector3 stabilityPivot, stabilityPlacement;
-        private Quaternion stabilityRotation;
-        private double maxPivotStepMm, maxPlacementStepMm, maxPlacementTurnDegrees;
-        private uint stabilitySamples;
         private double lastXrPrepareMilliseconds;
         private float nextTimingLog;
         private float sceneChangedAt;
@@ -649,7 +645,6 @@ namespace QVVR
         private bool cloudsDirty = true;
         private bool lastCloudPreference;
         private double maximumMaintenanceMilliseconds;
-        private double lastDiagnosticLogMilliseconds;
         private bool diagnosticsEnabled;
         private float nextPresentationRecovery;
 
@@ -828,7 +823,6 @@ namespace QVVR
             bool stereo = MenuScenePolicy.StereoSelection(plugin.StereoSelectionMenus.Value, introScene, state);
             if (stereoMenuScene == stereo) return;
             stereoMenuScene = stereo;
-            stereoMenuDiagnosticPending = stereo;
             needsRecenter = true; panelPoseValid = false;
             nextFlatCapture = nextUiCapture = 0f;
             RedirectOverlayCanvases();
@@ -957,8 +951,19 @@ namespace QVVR
             flatPanel = CreatePanel("QVVR_FlatScreenPanel", flatMaterial);
             uiPanel = CreatePanel("QVVR_UiPanel", uiMaterial);
             hudMesh = uiPanel.GetComponent<MeshFilter>().sharedMesh;
+            uiPanelRenderer = uiPanel.GetComponent<MeshRenderer>();
             flatPanel.transform.SetParent(transform, true);
             uiPanel.transform.SetParent(transform, true);
+            if (UsesOpenXr && plugin.CompositorHudLayer.Value)
+            {
+                if (Marshal.SizeOf(typeof(OpenXrHudLayer)) == 44)
+                {
+                    NativeBridge.QVVR_SetHudTexture(uiTexture.GetNativeTexturePtr());
+                    hudLayerEnabled = true;
+                    Plugin.Log.LogInfo("QVVR HUD compositor layer requested: " + uiTexture.width + "x" + uiTexture.height + " quad sampled at display resolution.");
+                }
+                else Plugin.Log.LogWarning("QVVR HUD layer ABI mismatch; HUD stays in the eye images.");
+            }
 
             NativeBridge.QVVR_SetFlipEyeTextureY(plugin.FlipEyeTextureY.Value ? 1 : 0);
             NativeBridge.QVVR_SetEyeTextures(
@@ -1062,10 +1067,9 @@ namespace QVVR
             long started = System.Diagnostics.Stopwatch.GetTimestamp();
             int result = initialized && sourceCamera != null ? NativeBridge.QVVR_PrepareOpenXrFrame(ref xrFrame) : 0;
             xrInput.Update(result);
-            if (result == 2) xrBusyUnityFrames++;
-            else if (!xrInput.RenderReady) xrTrackingMisses++;
             xrTrackingReady = xrInput.RenderReady;
-            lastXrPrepareMilliseconds = (System.Diagnostics.Stopwatch.GetTimestamp() - started) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            xrPreparedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            lastXrPrepareMilliseconds = (xrPreparedTimestamp - started) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
             if (!xrTrackingReady)
             {
                 if (!xrInput.Busy) { worldGrab.Stop(); dioramaScale.Stop(); placement.Stop(); trackingHeadValid = false; }
@@ -1136,6 +1140,11 @@ namespace QVVR
         {
             if (!initialized || sourceCamera == null || (!UsesOpenXr && compositor == null))
                 return;
+            // Game CPU = from the XR wait (input bridge Update, first) to here
+            // (renderer LateUpdate, last): every game Update/animation/LateUpdate.
+            if (UsesOpenXr && xrPreparedUnityFrame == Time.frameCount && xrPreparedTimestamp != 0)
+                mainThreadWindow.AddGame((System.Diagnostics.Stopwatch.GetTimestamp() - xrPreparedTimestamp) * 1000.0 /
+                    System.Diagnostics.Stopwatch.Frequency, lastXrPrepareMilliseconds, Time.unscaledDeltaTime * 1000.0);
 
             // Non-blocking prediction for the Unity cameras. The compositor's
             // blocking WaitGetPoses is paired with Submit on the graphics thread.
@@ -1174,7 +1183,6 @@ namespace QVVR
             {
                 calibrationInverse = absoluteHead.inverse;
                 needsRecenter = false;
-                if (stereoMenuScene) stereoMenuDiagnosticPending = true;
                 Plugin.Log.LogInfo("OpenVR view recentered.");
             }
             Matrix4x4 relativeHead = calibrationInverse * absoluteHead;
@@ -1189,9 +1197,11 @@ namespace QVVR
             UpdateDioramaStick();
             // Apply placement input in this same stereo frame for both eyes.
             UpdateRig();
-            if (diagnosticsEnabled) SampleDioramaStability();
+            // Live bounds only prune exact replays. Back-face caps have no replay;
+            // an unpruned solid merely rasterizes its depth-rejected back faces.
             if (gameplayScene && !levelIntroFlat && plugin.BlackCutSurfaces.Value && plugin.CullOutsideDiorama.Value && plugin.LiveCapBounds.Value &&
-                plugin.DioramaEnabled.Value && CylinderProbeMode == 0 && NativeBridge.ShaderClipReady)
+                lastCapMode != CutSurfaceMode.BackFace &&
+                plugin.DioramaEnabled.Value && NativeBridge.ShaderClipReady)
                 cutSurfaces.PrepareFrame(currentPoseSlot, frameCylinderCenter,
                     SafeValue(plugin.DioramaRadius.Value, 12f, 0.5f, 200f), SafeValue(plugin.DioramaHeight.Value, 12f, 0.5f, 200f) * 0.5f);
             else if (NativeBridge.ShaderClipReady) cutSurfaces.ClearFrame(currentPoseSlot);
@@ -1206,6 +1216,7 @@ namespace QVVR
                 if (settingsMenu != null)
                     settingsMenu.UpdatePose(trackingHeadPosition, trackingYaw, rigUnitsPerMeter,
                         rigPosition, rigRotation, calibrationInverse);
+                UpdateHudLayer();
 
                 if (gameplayScene && !levelIntroFlat)
                 {
@@ -1214,12 +1225,15 @@ namespace QVVR
                         if (plugin.HideDecorativeClouds.Value) cloudFilter.HideForStereo();
                         if (UsesOpenXr && lastXrStatus > 0) transparentEffects.Prepare();
                         if (plugin.WaterFoamFix.Value) liquidDepth.PrepareWater();
-                        if (plugin.CullOutsideDiorama.Value && plugin.DioramaEnabled.Value && CylinderProbeMode == 0 && NativeBridge.ShaderClipReady)
+                        if (plugin.CullOutsideDiorama.Value && plugin.DioramaEnabled.Value && NativeBridge.ShaderClipReady)
                             visibility.HideOutside(frameCylinderCenter, SafeValue(plugin.DioramaRadius.Value, 12f, 0.5f, 200f),
                                 SafeValue(plugin.DioramaHeight.Value, 12f, 0.5f, 200f) * 0.5f);
                         RenderStereoGameplay();
                     }
-                    finally { visibility.Restore(); liquidDepth.RestoreWater(); transparentEffects.Restore(); cloudFilter.Restore(); }
+                    finally
+                    {
+                        visibility.Restore(); liquidDepth.RestoreWater(); transparentEffects.Restore(); cloudFilter.Restore();
+                    }
                 }
                 else if (MenuScenePolicy.RenderStereoMenu(stereoMenuScene, levelIntroFlat))
                     RenderStereoGameplay();
@@ -1229,8 +1243,8 @@ namespace QVVR
             finally { screenFade.Restore(); if (introMenus != null) introMenus.RestoreStageDim(); }
 
             GL.IssuePluginEvent(renderEvent, NativeBridge.SubmitEventId + eventOffset);
-            if (UsesOpenXr) xrQueuedFrames++;
             lastMainRenderMilliseconds = (System.Diagnostics.Stopwatch.GetTimestamp() - renderStarted) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            mainThreadWindow.AddRender(lastMainRenderMilliseconds);
             CheckSubmitState();
         }
 
@@ -1261,6 +1275,19 @@ namespace QVVR
                 if (introScene) SetIntroPresentation(introPresentation); // Live 2D recovery switch.
                 if (plugin.BlackCutSurfaces.Value != lastCapPreference) renderMaterialsDirty = true;
                 if (cutSurfaces.NeedsRefresh) renderMaterialsDirty = true;
+                if (plugin.InlineCutSurfaces.Value != lastInlineCaps)
+                {
+                    lastInlineCaps = plugin.InlineCutSurfaces.Value; // Live switch, applied from the next eye.
+                    NativeBridge.QVVR_SetCapInlineEnabled(lastInlineCaps ? 1 : 0);
+                }
+                CutSurfaceMode capMode = plugin.CutSurfaceMode.Value;
+                // Auto: the cheap stencil caps where the GPU budget is tight (tiled Frame GPU).
+                if (capMode == CutSurfaceMode.Auto) capMode = UsesOpenXr ? CutSurfaceMode.BackFace : CutSurfaceMode.Exact;
+                if (capMode != lastCapMode)
+                {
+                    lastCapMode = capMode; // Live switch, applied from the next eye.
+                    NativeBridge.QVVR_SetCapMode(lastCapMode == CutSurfaceMode.BackFace ? 1 : 0);
+                }
                 if (renderMaterialsDirty)
                 {
                     liquidDepth.Clear(); cutSurfaces.Clear(); transparentEffects.Clear();
@@ -1305,7 +1332,7 @@ namespace QVVR
                 if (Time.unscaledTime >= nextCanvasScan)
                 {
                     nextCanvasScan = Time.unscaledTime + 0.5f;
-                    RedirectOverlayCanvases();
+                    RedirectOverlayCanvases(false);
                     RefreshGameplayTarget();
                 }
                 maximumMaintenanceMilliseconds = Math.Max(maximumMaintenanceMilliseconds,
@@ -1313,9 +1340,7 @@ namespace QVVR
                 if (Time.unscaledTime >= nextTimingLog)
                 {
                     nextTimingLog = Time.unscaledTime + (diagnosticsEnabled || detailedGpuTimings ? 5f : 30f);
-                    long logStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                     LogFrameTiming();
-                    lastDiagnosticLogMilliseconds = (System.Diagnostics.Stopwatch.GetTimestamp() - logStarted) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                     maximumMaintenanceMilliseconds = 0;
                 }
                 yield return interval;
@@ -1343,7 +1368,7 @@ namespace QVVR
             }
             if (!visible)
             {
-                if (uiTextureHasContent) { ClearTexture(uiTexture, Color.clear); uiTexture.GenerateMips(); }
+                if (uiTextureHasContent) { ClearTexture(uiTexture, Color.clear); uiTexture.GenerateMips(); uiContentVersion++; }
                 uiCaptureCache.Invalidate();
                 uiTextureHasContent = false;
                 if (uiPanel.activeSelf) uiPanel.SetActive(false);
@@ -1362,6 +1387,7 @@ namespace QVVR
             }
             finally { dialogHudLayout.Restore(); }
             uiTexture.GenerateMips();
+            uiContentVersion++; // The XR HUD quad recopies only when this changes.
             ProfileMark(1);
             // Snapshot original game layout, AFTER temporary VR centering is
             // restored. Otherwise the cache would invalidate itself every frame.
@@ -1447,6 +1473,39 @@ namespace QVVR
             trackingHeadRotation = absoluteHead.rotation;
             trackingYaw = SpatialMath.Upright(trackingHeadRotation, trackingYaw);
             trackingHeadValid = true;
+        }
+
+        // Every XR frame, after PositionPanels: hand this frame's HUD pose to the
+        // native quad layer, and omit the HUD from the eyes only once the runtime
+        // accepted it. Settings menu and screen fades keep the in-eye path so the
+        // menu stays above the HUD and fades still cover it. Allocation-free.
+        private void UpdateHudLayer()
+        {
+            if (!hudLayerEnabled) return;
+            bool wanted = uiPanel.activeSelf && uiTextureHasContent && screenFade.Opacity <= 0f &&
+                (settingsMenu == null || !settingsMenu.Visible);
+            hudLayer.Visible = 0;
+            if (wanted)
+            {
+                Matrix4x4 calibration = calibrationInverse.inverse;
+                Transform panel = uiPanel.transform;
+                hudLayer.SetFromWorld(panel.position, panel.rotation, panel.lossyScale, rigPosition, rigRotation,
+                    rigUnitsPerMeter, calibration, calibration.rotation, uiContentVersion);
+            }
+            NativeBridge.QVVR_SetHudLayer(currentPoseSlot, ref hudLayer);
+            int status = NativeBridge.QVVR_GetHudLayerStatus();
+            bool active = hudLayer.Visible != 0 && status == 1;
+            if (active != hudLayerActive)
+            {
+                hudLayerActive = active;
+                // Panel-only eyes render PanelMask: hide the quad renderer there too.
+                if (uiPanelRenderer != null) uiPanelRenderer.enabled = !active;
+            }
+            if (status < 0 && !hudLayerFailureLogged)
+            {
+                hudLayerFailureLogged = true;
+                Plugin.Log.LogWarning("QVVR HUD compositor layer refused by the runtime; HUD stays in the eye images.");
+            }
         }
 
         private void RefreshCharacterVisuals()
@@ -1768,6 +1827,7 @@ namespace QVVR
         {
             if (flatPanel.activeSelf)
                 flatPanel.SetActive(false);
+            // Diagnostic order switch: does a per-frame cost follow the first eye?
             RenderEye(EVREye.Eye_Left, leftCamera, TrackingEye(EVREye.Eye_Left), false);
             RenderEye(EVREye.Eye_Right, rightCamera, TrackingEye(EVREye.Eye_Right), false);
         }
@@ -1832,23 +1892,19 @@ namespace QVVR
             camera.projectionMatrix = UsesOpenXr ?
                 (eye == EVREye.Eye_Left ? xrFrame.LeftFov : xrFrame.RightFov).Projection(near, far) :
                 ToUnityProjection(system.GetProjectionMatrix(eye, near, far));
-            if (diagnosticsEnabled && stereoMenuDiagnosticPending && stereoMenuScene && !panelOnly && eye == EVREye.Eye_Left)
-            {
-                // Diagnostics only: one line per stereo-menu entry/recenter, never per frame.
-                stereoMenuDiagnosticPending = false;
-                LogStereoMenuDiagnostic(camera, trackingEye);
-            }
             bool cylinder =FullVrViewState.ClipWorld(gameplayScene, panelOnly, NativeBridge.ShaderClipReady, plugin.DioramaEnabled.Value);
             bool liquidVisible = !panelOnly && plugin.LiquidDepthFix.Value &&
                 (!plugin.CullOutsideDiorama.Value ? liquidDepth.NeedsDepth : liquidDepth.Visible(camera,
-                    cylinder && plugin.DioramaEnabled.Value && CylinderProbeMode == 0, frameCylinderCenter,
+                    cylinder && plugin.DioramaEnabled.Value, frameCylinderCenter,
                     SafeValue(plugin.DioramaRadius.Value, 12f, 0.5f, 200f), SafeValue(plugin.DioramaHeight.Value, 12f, 0.5f, 200f) * 0.5f));
             // CopyFrom restored the game's own depth requirements: only our
             // extra depth bit is conditional. Never strip game-requested modes.
             if (liquidVisible) camera.depthTextureMode |= DepthTextureMode.Depth;
-            if (eye == EVREye.Eye_Left) { lastLeftLiquidDepth = liquidVisible; if (liquidVisible) leftDepthFrames++; }
-            else { lastRightLiquidDepth = liquidVisible; if (liquidVisible) rightDepthFrames++; }
-            bool directHud = !panelOnly && plugin.DirectHudOverlay.Value && hudMesh != null &&
+            if (eye == EVREye.Eye_Left) lastLeftLiquidDepth = liquidVisible;
+            else lastRightLiquidDepth = liquidVisible;
+            // An active XR HUD quad replaces both in-eye HUD paths (settings menu
+            // and fades disable the quad, so they keep the camera overlay).
+            bool directHud = !panelOnly && !hudLayerActive && plugin.DirectHudOverlay.Value && hudMesh != null &&
                 (settingsMenu == null || !settingsMenu.Visible);
             ConfigureHudCommands(eye, directHud, cylinder);
             if (!panelOnly) ProfileMark(eye == EVREye.Eye_Left ? 2 : 4);
@@ -1857,7 +1913,6 @@ namespace QVVR
                 // The inverse actual GPU view-projection includes all existing
                 // world translation, rotation, pitch, zoom and VR unit scale.
                 // Reconstruct directly into original-game cylinder coordinates.
-                Vector3 origin = frameDioramaOrigin;
                 Vector3 center = frameCylinderCenter;
                 Matrix4x4 pixelToClip = Matrix4x4.identity;
                 pixelToClip.m00 = 2f / resolved.width;
@@ -1867,58 +1922,29 @@ namespace QVVR
                 Matrix4x4 viewProjection = GL.GetGPUProjectionMatrix(camera.projectionMatrix, true) * camera.worldToCameraMatrix;
                 NativeBridge.ClipParameters parameters = new NativeBridge.ClipParameters();
                 parameters.ScreenToCylinder = Matrix4x4.Translate(-center) * viewProjection.inverse * pixelToClip;
-                if (diagnosticsEnabled && CylinderProbeMode == 0 && plugin.DioramaEnabled.Value && !cylinderDiagnosticPrepared)
-                {
-                    diagnosticView = camera.worldToCameraMatrix;
-                    diagnosticProjection = GL.GetGPUProjectionMatrix(camera.projectionMatrix, true);
-                    diagnosticCenter = center;
-                    diagnosticRect = camera.pixelRect;
-                    cylinderDiagnosticPrepared = true;
-                }
-                if (diagnosticsEnabled)
-                {
-                    lastCylinderCenter = center;
-                    lastCylinderDeterminant = viewProjection.determinant;
-                    Vector4 pivotClip = viewProjection * new Vector4(origin.x, origin.y, origin.z, 1f);
-                    Vector4 pivotPixel = new Vector4(.5f * resolved.width * (pivotClip.x + pivotClip.w),
-                        .5f * resolved.height * (pivotClip.w - pivotClip.y), pivotClip.z, pivotClip.w);
-                    Vector4 pivotLocal = parameters.ScreenToCylinder * pivotPixel;
-                    lastCylinderPivotLocal = new Vector3(pivotLocal.x, pivotLocal.y, pivotLocal.z) / pivotLocal.w;
-                }
                 float radius = SafeValue(plugin.DioramaRadius.Value, 12f, 0.5f, 200f);
                 float cylinderHeight = SafeValue(plugin.DioramaHeight.Value, 12f, 0.5f, 200f);
                 float feather = DioramaMath.FeatherWidth(plugin.DioramaFeatherWidth.Value, radius, cylinderHeight);
                 parameters.Limits = new Vector4(radius * radius, cylinderHeight * 0.5f, feather,
                     !UsesOpenXr && DioramaMath.GreenBackground(plugin.VoidBackground.Value) ? 1f : 0f);
-                if (CylinderProbeMode == 2)
-                    parameters.Limits = new Vector4(float.MaxValue, float.MaxValue, 0f, 0f);
-                if (CylinderProbeMode == 3)
-                {
-                    // Every rasterized eye pixel is inside this known-finite
-                    // screen-space cylinder. No inverse projection/anchor involved.
-                    parameters.ScreenToCylinder = pixelToClip;
-                    parameters.Limits = new Vector4(4f, 4f, 0f, 0f);
-                }
                 camera.cullingMask = sourceMask & ~(UiCaptureMask | PanelMask);
                 // Arbitrary views around the diorama must not use QV's baked
                 // isometric occlusion assumptions. Depth generation stays per-eye.
                 camera.useOcclusionCulling = false;
-                if (CylinderProbeMode == 1) camera.Render();
-                else
-                {
-                    NativeBridge.QVVR_SetClipParameters(currentPoseSlot, (int)eye, ref parameters);
-                    NativeBridge.QVVR_SetCylinderCapOptions(currentPoseSlot, (int)eye,
-                        plugin.BlackCutSurfaces.Value && CylinderProbeMode == 0 && plugin.DioramaEnabled.Value ? 1 : 0,
-                        SystemInfo.usesReversedZBuffer ? 1 : 0, UsesOpenXr ? 1 : 0);
-                    if (plugin.CullOutsideDiorama.Value)
-                        NativeBridge.QVVR_SetCapCullVolume(currentPoseSlot, (int)eye, center.x, center.y, center.z, radius, cylinderHeight * 0.5f);
-                    GL.IssuePluginEvent(renderEvent, NativeBridge.ClipEventBase + currentPoseSlot * 4 + (int)eye);
-                    try { camera.Render(); }
-                    finally { GL.IssuePluginEvent(renderEvent, NativeBridge.EndClipEvent); }
-                }
+                NativeBridge.QVVR_SetClipParameters(currentPoseSlot, (int)eye, ref parameters);
+                NativeBridge.QVVR_SetCylinderCapOptions(currentPoseSlot, (int)eye,
+                    plugin.BlackCutSurfaces.Value && plugin.DioramaEnabled.Value ? 1 : 0,
+                    SystemInfo.usesReversedZBuffer ? 1 : 0, UsesOpenXr ? 1 : 0);
+                if (plugin.CullOutsideDiorama.Value)
+                    NativeBridge.QVVR_SetCapCullVolume(currentPoseSlot, (int)eye, center.x, center.y, center.z, radius, cylinderHeight * 0.5f);
+                GL.IssuePluginEvent(renderEvent, NativeBridge.ClipEventBase + currentPoseSlot * 4 + (int)eye);
+                try { camera.Render(); }
+                finally { GL.IssuePluginEvent(renderEvent, NativeBridge.EndClipEvent); }
             }
             else camera.Render();
-            if (!panelOnly && !directHud)
+            // World GPU phase end marker; the in-eye HUD paths emit it otherwise.
+            if (!panelOnly && hudLayerActive) ProfileMark(eye == EVREye.Eye_Left ? 3 : 5);
+            if (!panelOnly && !directHud && !hudLayerActive)
             {
                 ProfileMark(eye == EVREye.Eye_Left ? 3 : 5);
                 ProfileMark(eye == EVREye.Eye_Left ? 6 : 8);
@@ -1927,26 +1953,6 @@ namespace QVVR
             }
             if (multisampled != null) multisampled.ResolveAntiAliasedSurface(resolved);
             screenFade.Render(resolved);
-        }
-
-        private void LogStereoMenuDiagnostic(Camera camera, Matrix4x4 trackingEye)
-        {
-            Vector3 hub = Vector3.zero;
-            bool hasHub = introMenus != null && introMenus.TryGetHubAnchor(out hub);
-            Matrix4x4 p = camera.projectionMatrix;
-            Vector3 relative = (Vector3)(calibrationInverse * trackingEye).GetColumn(3);
-            Plugin.Log.LogInfo(string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                "QVVR stereo menu diagnostic: backend={0} state={1} | source {2} pos={3} rot={4} ortho={5} size={6:F2} fov={7:F1} near={8:F3} far={9:F1} clear={10} bg={11} mask=0x{12:X8} depth={13} | hub={14} {15} scale={16:F2} | rig pos={17} rot={18} units={19:F2} | eye pos={20} fwd={21} rel={22} near={23:F3} far={24:F1} clear={25} mask=0x{26:X8} msaa={27} target={28}x{29} | proj m00={30:F3} m11={31:F3} m22={32:F4} m23={33:F4} m32={34:F1} reversedZ={35}",
-                UsesOpenXr ? "OpenXR" : "OpenVR", introPresentation,
-                CameraSelector.PathOf(sourceCamera.transform), sourceCamera.transform.position.ToString("F2"), sourceCamera.transform.eulerAngles.ToString("F1"),
-                sourceCamera.orthographic, sourceCamera.orthographicSize, sourceCamera.fieldOfView, sourceCamera.nearClipPlane, sourceCamera.farClipPlane,
-                sourceCamera.clearFlags, sourceCamera.backgroundColor, sourceMask, sourceCamera.depth,
-                hasHub, hub.ToString("F2"), plugin.IntroHubDistanceScale.Value,
-                rigPosition.ToString("F2"), rigRotation.eulerAngles.ToString("F1"), rigUnitsPerMeter,
-                camera.transform.position.ToString("F2"), camera.transform.forward.ToString("F2"), relative.ToString("F2"),
-                camera.nearClipPlane, camera.farClipPlane, camera.clearFlags, camera.cullingMask,
-                camera.allowMSAA, camera.targetTexture != null ? camera.targetTexture.width : 0, camera.targetTexture != null ? camera.targetTexture.height : 0,
-                p.m00, p.m11, p.m22, p.m23, p.m32, SystemInfo.usesReversedZBuffer));
         }
 
         private static void RenderPanelOverlay(Camera camera)
@@ -1966,24 +1972,6 @@ namespace QVVR
             if (detailedGpuTimings) GL.IssuePluginEvent(renderEvent, NativeBridge.ProfileEventBase + marker);
         }
 
-        private void SampleDioramaStability()
-        {
-            if (!gameplayScene || !plugin.DioramaEnabled.Value || levelIntroFlat || gameplayTarget == null || !placement.Valid || placement.Active ||
-                (inputBridge != null && inputBridge.DioramaStick.sqrMagnitude > 0f) ||
-                (settingsMenu != null && settingsMenu.Visible))
-            { stabilitySampleValid = false; return; }
-            Vector3 pivot = gameplayTarget.position;
-            if (stabilitySampleValid)
-            {
-                double step = (pivot - stabilityPivot).magnitude * 1000.0 / rigUnitsPerMeter;
-                maxPivotStepMm = Math.Max(maxPivotStepMm, step);
-                maxPlacementStepMm = Math.Max(maxPlacementStepMm, (placement.Position - stabilityPlacement).magnitude * 1000.0);
-                maxPlacementTurnDegrees = Math.Max(maxPlacementTurnDegrees, Quaternion.Angle(placement.Rotation, stabilityRotation));
-                stabilitySamples++;
-            }
-            stabilityPivot = pivot; stabilityPlacement = placement.Position; stabilityRotation = placement.Rotation;
-            stabilitySampleValid = true;
-        }
         private CommandBuffer ProfileCommands(string name, int marker)
         {
             CommandBuffer commands = new CommandBuffer { name = name };
@@ -2023,7 +2011,17 @@ namespace QVVR
             sourceCamera.enabled = false;
         }
 
-        private void RedirectOverlayCanvases()
+        // Full UI scans (layer isolation, dialog and cache discovery) walk every
+        // UI transform: ~4 ms on Frame. Periodic maintenance repeats them only
+        // when a captured hierarchy changed, a hidden panel opened, a setting
+        // changed, or as a slow safety net (game layer/material swaps).
+        private int lastUiScanSignature;
+        private float nextFullUiScan;
+        private const float FullUiScanInterval = 5f;
+
+        private void RedirectOverlayCanvases() { RedirectOverlayCanvases(true); }
+
+        private void RedirectOverlayCanvases(bool force)
         {
             if (discoveredCanvases == null || Time.unscaledTime >= nextCanvasDiscovery)
             {
@@ -2031,8 +2029,28 @@ namespace QVVR
                 nextCanvasDiscovery = Time.unscaledTime + 1f;
             }
             Canvas[] found = discoveredCanvases;
-            bool cacheScan = uiCaptureCache.BeginMaintenance(Time.unscaledTime, plugin.AdaptiveUiCapture.Value, plugin.LightweightUiMaintenance.Value);
-            dialogHudLayout.BeginScan();
+            bool hideParticles = UsesOpenXr && plugin.HideHudParticles.Value; // Live switch, Frame only.
+            if (uiCaptureCache.HideParticles != hideParticles) uiCaptureCache.HideParticles = hideParticles;
+            int signature = found.Length;
+            unchecked
+            {
+                signature = signature * 31 + (hideParticles ? 1 : 0) + (plugin.AdaptiveUiCapture.Value ? 2 : 0) + (plugin.LightweightUiMaintenance.Value ? 4 : 0);
+                for (int index = 0; index < found.Length; index++)
+                {
+                    Canvas canvas = found[index];
+                    if (canvas == null) { signature = signature * 31 + 7; continue; }
+                    // Covers objects added/removed anywhere in this canvas's root hierarchy.
+                    signature = signature * 31 + canvas.transform.hierarchyCount;
+                }
+            }
+            bool fullScan = force || signature != lastUiScanSignature || uiCaptureCache.Stale || Time.unscaledTime >= nextFullUiScan;
+            if (fullScan)
+            {
+                lastUiScanSignature = signature;
+                nextFullUiScan = Time.unscaledTime + FullUiScanInterval;
+            }
+            bool cacheScan = fullScan && uiCaptureCache.BeginMaintenance(Time.unscaledTime, plugin.AdaptiveUiCapture.Value, plugin.LightweightUiMaintenance.Value);
+            if (fullScan) dialogHudLayout.BeginScan();
             for (int index = 0; index < found.Length; index++)
             {
                 Canvas canvas = found[index];
@@ -2058,11 +2076,11 @@ namespace QVVR
 
                 if (state != null)
                 {
-                    IsolateCanvasLayers(canvas);
+                    if (fullScan) IsolateCanvasLayers(canvas);
                     hudLayoutInset.Apply(canvas, MenuScenePolicy.UseGameplayHud(gameplayScene && !levelIntroFlat, MenuScenePolicy.RenderStereoMenu(stereoMenuScene, levelIntroFlat)) ? plugin.GameplayHudInset.Value : 0f);
                     if (canvas.worldCamera != uiCaptureCamera) canvas.worldCamera = uiCaptureCamera;
                     if (canvas.planeDistance != CanvasPlane) canvas.planeDistance = CanvasPlane;
-                    dialogHudLayout.Watch(canvas);
+                    if (fullScan) dialogHudLayout.Watch(canvas);
                     if (cacheScan && !uiCaptureCache.Failed)
                     {
                         try { uiCaptureCache.Watch(canvas); }
@@ -2168,45 +2186,25 @@ namespace QVVR
                 Plugin.Log.LogWarning("OpenVR native submit result: left=" + leftResult + ", right=" + rightResult);
         }
 
-        // Sparse diagnostics outside LateUpdate: single-frame samples, NOT
-        // session means/percentiles. Skip transition frames to label mode safely.
+        // DiagnosticsEnabled/DetailedGpuTimings only: sparse measurement lines for
+        // Frame testing (cadence, CPU/GPU frame times, GPU phases, cap/HUD state).
+        // Release configs log nothing periodically.
         private void LogFrameTiming()
         {
-            bool verbose = diagnosticsEnabled || detailedGpuTimings;
-            if (diagnosticsEnabled && cylinderDiagnosticPrepared && !cylinderDiagnosticWritten)
-            {
-                string path = Path.Combine(Paths.PluginPath, "QVVR", "cylinder-diagnostic.bin");
-                if (NativeBridge.QVVR_WriteClipDiagnostic(path) == 1)
-                {
-                    cylinderDiagnosticWritten = true;
-                    Plugin.Log.LogInfo("QVVR one-shot GPU constant-buffer diagnostic saved: " + path +
-                        "; center=" + diagnosticCenter + "; pixel rect=" + diagnosticRect +
-                        "; expected view:\n" + diagnosticView.ToString("R") +
-                        "; expected GPU projection:\n" + diagnosticProjection.ToString("R"));
-                    Renderer targetRenderer = gameplayTarget != null ? gameplayTarget.GetComponentInChildren<Renderer>() : null;
-                    if (targetRenderer != null)
-                        Plugin.Log.LogInfo("QVVR target renderer world bounds: center=" + targetRenderer.bounds.center + ", size=" + targetRenderer.bounds.size);
-                }
-            }
-            if (verbose && gameplayScene && plugin.DioramaEnabled.Value && NativeBridge.ShaderClipReady)
+            if (!diagnosticsEnabled && !detailedGpuTimings) return;
+            if (gameplayScene && plugin.DioramaEnabled.Value && NativeBridge.ShaderClipReady)
             {
                 uint patched = 0, rejected = 0, unknown = 0, depthOnly = 0;
                 NativeBridge.QVVR_GetClipStats(ref patched, ref rejected, ref unknown, ref depthOnly);
-                uint materials = 0, otherContexts = 0;
-                NativeBridge.QVVR_GetClipBindingStats(ref materials, ref otherContexts);
                 Plugin.Log.LogInfo("QVVR cylinder coverage: patched=" + patched + ", rejected=" + rejected +
-                    ", uncaptured non-null binds=" + unknown + ", clipped depth-only binds=" + depthOnly +
-                    ", material binds=" + materials + ", other context binds=" + otherContexts);
-                Plugin.Log.LogInfo("QVVR cylinder probe=" + CylinderProbeMode + ", center=" + lastCylinderCenter +
-                    ", reconstructed pivot local=" + lastCylinderPivotLocal + ", projection determinant=" + lastCylinderDeterminant);
-                Plugin.Log.LogInfo("QVVR liquid depth: enabled=" + plugin.LiquidDepthFix.Value +
-                    ", cached=" + liquidDepth.Count + ", active=" + liquidDepth.NeedsDepth);
+                    ", uncaptured non-null binds=" + unknown + ", clipped depth-only binds=" + depthOnly);
                 Plugin.Log.LogInfo("QVVR optimization counters: outside meshes=" + visibility.LastHidden + "/" + visibility.Count +
-                    ", liquid depth needed L/R=" + lastLeftLiquidDepth + "/" + lastRightLiquidDepth +
-                    ", cumulative depth eyes=" + leftDepthFrames + "/" + rightDepthFrames +
-                    ", UI captures/reuses=" + uiCaptureCache.Captures + "/" + uiCaptureCache.Reuses);
-                Plugin.Log.LogInfo("QVVR UI cache continuous reason=" + uiCaptureCache.ContinuousReason +
-                    " (0=static, 1=failed, 2=custom/unknown/time-driven material, 3=active Animator); adaptive=" + plugin.AdaptiveUiCapture.Value);
+                    ", liquid depth L/R=" + lastLeftLiquidDepth + "/" + lastRightLiquidDepth +
+                    ", UI captures/reuses=" + uiCaptureCache.Captures + "/" + uiCaptureCache.Reuses +
+                    ", UI cache continuous reason=" + uiCaptureCache.ContinuousReason + " (0=static, 1=failed, 2=material, 3=Animator)");
+                if (hudLayerEnabled)
+                    Plugin.Log.LogInfo("QVVR HUD compositor layer: status=" + NativeBridge.QVVR_GetHudLayerStatus() +
+                        " (1=ready, 0=pending, -1=refused), active=" + hudLayerActive);
                 if (detailedGpuTimings)
                     Plugin.Log.LogInfo(string.Format("QVVR GPU phases (delayed sample, ms): UI={0:F2}, world L/R={1:F2}/{2:F2}, HUD L/R={3:F2}/{4:F2}, XR copy span={5:F2}, depth L/R={6:F2}/{7:F2}. Depth is included in world; zero means absent/unavailable. Do not sum with CPU.",
                         NativeBridge.QVVR_GetGpuPhaseTime(0), NativeBridge.QVVR_GetGpuPhaseTime(1), NativeBridge.QVVR_GetGpuPhaseTime(2),
@@ -2216,19 +2214,12 @@ namespace QVVR
                 {
                     uint available = 0, registered = 0, replayed = 0, composed = 0;
                     NativeBridge.QVVR_GetCapStats(ref available, ref registered, ref replayed, ref composed);
-                    uint bounded = 0, skipped = 0;
-                    NativeBridge.QVVR_GetCapCullStats(ref bounded, ref skipped);
-                    Plugin.Log.LogInfo("QVVR black caps: available=" + available + ", registered buffers=" + registered +
-                        ", total volume draws=" + replayed + ", total eye composites=" + composed +
-                        ", bounded static buffers=" + bounded + ", live skip buffers this stereo frame=" + cutSurfaces.LastSkipped +
-                        ", cumulative pruned replays=" + skipped);
+                    uint inlineEyes = 0, privateEyes = 0; int conflict = 0;
+                    NativeBridge.QVVR_GetCapModeStats(ref inlineEyes, ref privateEyes, ref conflict);
+                    Plugin.Log.LogInfo("QVVR black caps: mode=" + lastCapMode + ", registered buffers=" + registered +
+                        ", eyes back-face/inline/private=" + NativeBridge.QVVR_GetCapBackFaceEyes() + "/" + inlineEyes + "/" + privateEyes +
+                        ", replays=" + replayed + ", game stencil conflict=" + (conflict != 0));
                 }
-                Plugin.Log.LogInfo("QVVR placement: physical layout=" + placement.Valid +
-                    ", player=" + (gameplayTarget != null) + ", right drag=" + (inputBridge != null && inputBridge.RightGripGrabHeld) +
-                    ", both=" + (inputBridge != null && inputBridge.BothGripsHeld) + ", active=" + placement.Active +
-                    ", right tracked=" + (inputBridge != null && IsControllerTracked(inputBridge.RightDevice)) +
-                    ", physical scale=" + rigWorldScale + ", position=" + placement.Position +
-                    ", rotation=" + placement.Rotation.eulerAngles + ", saved=" + plugin.PlacementSaved.Value);
             }
             int error = 0;
             if (NativeBridge.QVVR_GetOpenXrStatus(ref error) > 0)
@@ -2237,17 +2228,12 @@ namespace QVVR
                 NativeBridge.QVVR_ReadXrPacing(ref pacing);
                 Plugin.Log.LogInfo(string.Format("QVVR XR submission cadence window: intervals={0}, average={1:F2} ms, p95 bucket upper={2:F2} ms, max={3:F2} ms, runtime period={4:F2} ms, long gaps (>1.5 period)={5}, max prepare-to-copy={6:F2} ms, max copy/EndFrame={7:F2} ms. Submission timing, NOT display drops/FPS or pure GPU time.",
                     pacing.Intervals, pacing.AverageMs, pacing.P95UpperMs, pacing.MaximumMs, pacing.PeriodMs, pacing.LongGaps, pacing.MaximumQueueAgeMs, pacing.MaximumCopySubmitMs));
-                if (stabilitySamples != 0)
-                    Plugin.Log.LogInfo(string.Format("QVVR ungrabbed diorama stability window: samples={0}, max raw player-follow step={1:F4} physical mm, max placement step={2:F4} mm, max placement turn={3:F6} deg. Player movement is expected; compare while idle. HMD poses are not filtered.",
-                        stabilitySamples, maxPivotStepMm, maxPlacementStepMm, maxPlacementTurnDegrees));
-                stabilitySamples = 0; maxPivotStepMm = maxPlacementStepMm = maxPlacementTurnDegrees = 0;
-                if (verbose) Plugin.Log.LogInfo("QVVR XR pacing counters (cumulative): queued stereo frames=" + xrQueuedFrames +
-                    ", busy/skipped Unity frames=" + xrBusyUnityFrames + ", no-render/tracking misses=" + xrTrackingMisses);
-                Plugin.Log.LogInfo(string.Format("QVVR maintenance window: max CPU={0:F2} ms, post-submit={1}, previous log batch={2:F2} ms. Maintenance excludes logging; elapsed wall-clock times, not profiler CPU usage.", maximumMaintenanceMilliseconds, plugin.PostSubmitMaintenance.Value, lastDiagnosticLogMilliseconds));
-                if (!verbose) Plugin.Log.LogInfo("QVVR performance summary: outside meshes=" + visibility.LastHidden + "/" + visibility.Count +
-                    ", UI captures/reuses=" + uiCaptureCache.Captures + "/" + uiCaptureCache.Reuses +
-                    ", cache suspended=" + uiCaptureCache.Suspended + ", continuous reason=" + uiCaptureCache.ContinuousReason +
-                    ", live cap skips=" + cutSurfaces.LastSkipped);
+                Plugin.Log.LogInfo(string.Format("QVVR maintenance window: max CPU={0:F2} ms, post-submit={1}. Elapsed wall-clock time, not profiler CPU usage.", maximumMaintenanceMilliseconds, plugin.PostSubmitMaintenance.Value));
+                if (mainThreadWindow.Frames > 0)
+                    Plugin.Log.LogInfo(string.Format("QVVR main-thread window: frames={0}, Unity frame avg/max={1:F2}/{2:F2} ms, game Update+LateUpdate CPU avg/max={3:F2}/{4:F2} ms, XR wait avg/max={5:F2}/{6:F2} ms, QVVR render enqueue avg/max={7:F2}/{8:F2} ms. Wall-clock; the remainder is physics, Unity overhead and end-of-frame work.",
+                        mainThreadWindow.Frames, mainThreadWindow.FrameAverage, mainThreadWindow.FrameMax, mainThreadWindow.GameAverage, mainThreadWindow.GameMax,
+                        mainThreadWindow.WaitAverage, mainThreadWindow.WaitMax, mainThreadWindow.RenderAverage, mainThreadWindow.RenderMax));
+                mainThreadWindow.Reset();
                 Plugin.Log.LogInfo(string.Format("QVVR OpenXR timing sample mode={0}: main render enqueue CPU={1:F2} ms, eye/UI/copy GPU={2:F2} ms, XR wait/pose/input preparation={3:F2} ms; budget=13.89 ms at 72 Hz. Enqueue CPU excludes the game's earlier Update and XR pacing wait; GPU query is delayed/nonblocking, zero means unavailable.",
                     levelIntroFlat ? "flat-cinema" : gameplayScene ? (plugin.DioramaEnabled.Value ? "diorama" : "full-vr") : stereoMenuScene ? "3D-menu" : "2D-menu", lastMainRenderMilliseconds, NativeBridge.QVVR_GetGpuTime(), lastXrPrepareMilliseconds));
                 return;
@@ -2265,8 +2251,6 @@ namespace QVVR
         private void OnActiveSceneChanged(Scene previous, Scene current)
         {
             fullVrView.Reset();
-            stabilitySampleValid = false; stabilitySamples = 0;
-            maxPivotStepMm = maxPlacementStepMm = maxPlacementTurnDegrees = 0;
             placement.Stop(); SavePlacementSettings(); placement.Reset();
             cloudFilter.Clear();
             visibility.Clear();

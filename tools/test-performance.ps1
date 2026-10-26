@@ -7,6 +7,7 @@ $sources=@('DioramaVisibility.cs','UiCaptureCache.cs','UiMaterialWatch.cs','Liqu
 }
 $fixture=Get-Content (Join-Path $PSScriptRoot 'performance-fixture.cs') -Raw
 $tests=@'
+namespace Coffee.UIExtensions { public class UIParticle : UnityEngine.UI.Graphic {} }
 namespace QVVR {
  internal static class TmpFixture {
   static readonly System.Reflection.Emit.ModuleBuilder Module=System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("Unity.TextMeshPro"),System.Reflection.Emit.AssemblyBuilderAccess.Run).DefineDynamicModule("Fixture");
@@ -119,11 +120,13 @@ namespace QVVR {
    text.Dirty(0);Check(cache.NeedsCapture(),"TMP text edits invalidate capture");cache.Captured();
    text.Shared=new Material{shader=sdf.shader};Check(cache.NeedsCapture(),"TMP shared material replacement cannot freeze UI");text.Shared=sdf;
    sdf.shader=new Shader{name="Custom/AnimatedText"};Check(cache.NeedsCapture(),"In-place shader replacement fails open");
+   foreach(var staticShader in new[]{"TextMeshPro/Bitmap","TextMeshPro/Sprite"}){sdf.shader=new Shader{name=staticShader};cache.BeginScan();cache.Watch(canvas);cache.Captured();Check(!cache.NeedsCapture(),"QV HUD TMP shader is reusable: "+staticShader);text.Dirty(0);Check(cache.NeedsCapture(),"TMP edits still invalidate with "+staticShader);}
    sdf.shader=new Shader{name="TextMeshPro/Distance Field"};cache.BeginScan();cache.Watch(canvas);cache.Captured();Check(!cache.NeedsCapture(),"Non-scrolling full SDF is reusable");
    sdf.Floats[Shader.PropertyToID("_FaceUVSpeedX")]=1;Check(cache.NeedsCapture(),"Time-driven face texture scrolling retains capture rate");
    sdf.Floats.Clear();sdf.Floats[Shader.PropertyToID("_OutlineUVSpeedY")]=1;Check(cache.NeedsCapture(),"Time-driven outline texture scrolling retains capture rate");
    var uninitialized=TmpFixture.Create(true,null);canvas.Children=new object[]{uninitialized};cache.BeginScan();cache.Watch(canvas);cache.Captured();
-   Check(cache.NeedsCapture()&&uninitialized.MaterialReads==0,"Null TMP shared material safely retains cadence without cloning");
+   Check(!cache.NeedsCapture()&&uninitialized.MaterialReads==0,"Null TMP shared material draws nothing: no forced capture, no cloning");
+   uninitialized.Shared=new Material{shader=new Shader{name="Custom/Unknown"}};Check(cache.NeedsCapture(),"A material appearing on an unused TMP submesh fails open");
    var light=new UiCaptureCache();var ordinary=new UnityEngine.UI.Image();canvas.Children=new object[]{ordinary};
    Check(light.BeginMaintenance(0,true,true),"First lightweight maintenance discovers UI");light.Watch(canvas);light.EndMaintenance(0,true);light.Captured();
    Check(!light.Suspended&&!light.NeedsCapture()&&ordinary.Listeners==3,"Static UI retains adaptive capture");
@@ -146,9 +149,58 @@ namespace QVVR {
    long allocated=GC.GetAllocatedBytesForCurrentThread();for(int i=0;i<512;i++){light.NeedsCapture();light.Captured();}
    Check(allocated==GC.GetAllocatedBytesForCurrentThread(),"Suspended full-rate capture accounting allocates zero warmed managed bytes");
    light.Clear();Check(!light.Suspended&&replacement.Listeners==0,"Scene cleanup resets lightweight recovery and subscriptions");
+   // Rescans keep an unchanged texture; hidden panels cost one subtree-root check.
+   var scanCanvas=new Canvas();var shown=new UnityEngine.UI.Image();var shownRect=new RectTransform();
+   var panelRoot=new RectTransform();panelRoot.gameObject.activeInHierarchy=false;panelRoot.parent=scanCanvas.transform;
+   var panelChild=new RectTransform();panelChild.gameObject.activeInHierarchy=false;panelChild.parent=panelRoot;
+   var panelGraphic=new UnityEngine.UI.Image();panelGraphic.gameObject.activeInHierarchy=false;
+   scanCanvas.Children=new object[]{shown,shownRect,panelRoot,panelChild,panelGraphic};
+   var scans=new UiCaptureCache();
+   scans.BeginMaintenance(0,true,true);scans.Watch(scanCanvas);scans.EndMaintenance(0,true);scans.Captured();
+   Check(!scans.NeedsCapture()&&scans.WatchedGraphics==1&&scans.WatchedRects==1&&scans.InactiveRoots==1&&panelGraphic.Listeners==3,"Only active widgets are snapshotted; a hidden panel is one subtree root and stays subscribed");
+   scans.BeginMaintenance(.5f,true,true);scans.Watch(scanCanvas);scans.EndMaintenance(.5f,true);
+   Check(!scans.NeedsCapture(),"An unchanged maintenance rescan does not force a HUD re-render");
+   shownRect.localPosition=new Vector3(2,0,0);scans.BeginMaintenance(1,true,true);scans.Watch(scanCanvas);scans.EndMaintenance(1,true);
+   Check(scans.NeedsCapture(),"A change made just before a rescan is still captured");scans.Captured();
+   panelRoot.gameObject.activeInHierarchy=true;panelChild.gameObject.activeInHierarchy=true;panelGraphic.gameObject.activeInHierarchy=true;
+   Check(scans.NeedsCapture(),"Opening a hidden panel captures it");scans.Captured();
+   Check(scans.NeedsCapture(),"An opened panel keeps the normal cadence until it is snapshotted");
+   scans.BeginMaintenance(1.5f,true,true);scans.Watch(scanCanvas);scans.EndMaintenance(1.5f,true);scans.Captured();
+   Check(!scans.NeedsCapture()&&scans.WatchedGraphics==2&&scans.InactiveRoots==0,"The next scan snapshots the opened panel and reuse resumes");
+   var popup=new UnityEngine.UI.Image();scanCanvas.Children=new object[]{shown,shownRect,panelRoot,panelChild,panelGraphic,popup};
+   scans.BeginMaintenance(2,true,true);scans.Watch(scanCanvas);scans.EndMaintenance(2,true);
+   Check(scans.NeedsCapture(),"A newly instantiated visible widget is captured");scans.Captured();Check(!scans.NeedsCapture(),"Then reused");
    cache.DisableReuse();Check(cache.Failed&&cache.NeedsCapture()&&subMesh.Listeners==0,"Failed cache releases listeners and fails open");
    cache.BeginScan();cache.Watch(canvas);cache.Captured();
    Check(cache.Failed&&cache.NeedsCapture()&&subMesh.MaterialReads==0&&subMesh.Listeners==0,"Circuit breaker survives scene/maintenance scans");
+   var hudCanvas=new Canvas();var particle=new Coffee.UIExtensions.UIParticle();var glow=new UnityEngine.UI.Image();
+   glow.material=new Material{shader=new Shader{name="ERB/Particles/Add_CenterGlow"}};hudCanvas.Children=new object[]{particle,glow};
+   var showing=new UiCaptureCache();showing.BeginScan();showing.Watch(hudCanvas);showing.Captured();
+   Check(particle.enabled&&showing.HiddenParticles==0&&showing.NeedsCapture(),"HUD particles stay visible and animated unless hiding is enabled");
+   var hiding=new UiCaptureCache();hiding.HideParticles=true;hiding.BeginScan();hiding.Watch(hudCanvas);hiding.Captured();
+   Check(!particle.enabled&&hiding.HiddenParticles==1&&!hiding.NeedsCapture(),"Hidden looping particles and a static glow material let the HUD reuse");
+   glow.material=new Material{shader=new Shader{name="Custom/Animated"}};Check(hiding.NeedsCapture(),"Replaced glow material fails open");
+   glow.material=new Material{shader=new Shader{name="ERB/Particles/Add_CenterGlow"}};hiding.BeginScan();hiding.Watch(hudCanvas);hiding.Captured();
+   Check(!hiding.NeedsCapture(),"A new static glow material instance is re-resolved by the next scan");
+   hiding.HideParticles=false;Check(particle.enabled&&hiding.HiddenParticles==0,"Live switch restores hidden particles");
+   hiding.HideParticles=true;hiding.BeginScan();hiding.Watch(hudCanvas);hiding.Clear();
+   Check(particle.enabled&&hiding.HiddenParticles==0,"Cache cleanup (VR off, scene change) restores hidden particles");
+   // Hidden-but-enabled panels (alpha 0 / culled) must not block reuse, and
+   // must force a capture when they become visible again.
+   var fadeCanvas=new Canvas();var hiddenPanel=new UnityEngine.UI.Image();hiddenPanel.material=new Material{shader=new Shader{name="Custom/LoadImageShader"}};
+   hiddenPanel.canvasRenderer.InheritedAlpha=0;fadeCanvas.Children=new object[]{hiddenPanel};
+   var fading=new UiCaptureCache();fading.BeginScan();fading.Watch(fadeCanvas);fading.Captured();
+   Check(!fading.NeedsCapture(),"Group-transparent custom panel does not force continuous capture");
+   hiddenPanel.canvasRenderer.InheritedAlpha=1;Check(fading.NeedsCapture(),"The same panel blocks reuse once visible");
+   hiddenPanel.canvasRenderer.InheritedAlpha=0;hiddenPanel.canvasRenderer.Alpha=0;fading.BeginScan();fading.Watch(fadeCanvas);fading.Captured();
+   Check(!fading.NeedsCapture(),"Renderer-transparent panel is reusable");
+   hiddenPanel.canvasRenderer.Alpha=1;Check(fading.NeedsCapture(),"Renderer alpha fade-in invalidates the cached HUD");
+   hiddenPanel.canvasRenderer.cull=true;hiddenPanel.canvasRenderer.InheritedAlpha=1;fading.BeginScan();fading.Watch(fadeCanvas);fading.Captured();
+   Check(!fading.NeedsCapture(),"Culled custom graphic does not force capture");
+   hiddenPanel.canvasRenderer.cull=false;hiddenPanel.color=new Color{a=0};fading.BeginScan();fading.Watch(fadeCanvas);fading.Captured();
+   Check(!fading.NeedsCapture(),"Color-transparent custom graphic does not force capture");
+   var mask=new UnityEngine.UI.Image();mask.material=new Material{shader=new Shader{name="UI/Default-SoftMask"}};fadeCanvas.Children=new object[]{mask};
+   fading.BeginScan();fading.Watch(fadeCanvas);fading.Captured();Check(!fading.NeedsCapture(),"Static soft-mask material is reusable");
    return count;
   }
  }
@@ -190,15 +242,15 @@ try {
  foreach($methodName in @('BeginMaintenance','EndMaintenance')){
   if(!($redirect.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.DeclaringType.Name -eq 'UiCaptureCache' -and $_.Operand.Name -eq $methodName})){throw "Missing lightweight cache lifecycle integration: $methodName"}
  }
- # Verify the release branch can actually jump over validation-only hot work.
- foreach($pair in @(@('LateUpdate','SampleDioramaStability'),@('RenderEye','get_determinant'))){
+ # Release hot paths carry no investigation-only instrumentation.
+ foreach($pair in @(@('LateUpdate','Mark'),@('RenderEye','get_determinant'),@('RenderEye','LogStereoMenuDiagnostic'))){
   $body=($renderer.Methods | Where-Object Name -eq $pair[0]).Body.Instructions
-  $call=$body | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq $pair[1]}
-  $guard=$body | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference] -and $_.Operand.Name -eq 'diagnosticsEnabled' -and $_.Next.OpCode.Name -like 'brfalse*' -and $_.Offset -lt $call.Offset -and $_.Next.Operand.Offset -gt $call.Offset}
-  if(!$call -or !$guard){throw "Developer-only render work must be guarded: $($pair -join '.')"}
+  if($body | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq $pair[1]}){throw "Removed diagnostic remains in hot path: $($pair -join '.')"}
  }
+ # Periodic measurement lines are developer-only: a release config logs nothing.
  $log=($renderer.Methods | Where-Object Name -eq 'LogFrameTiming').Body.Instructions
- if(!($log | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference] -and $_.Operand.Name -eq 'lastDiagnosticLogMilliseconds'})){throw 'Log batch time must be reported separately from maintenance.'}
+ $first=$log | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference]} | Select-Object -First 1
+ if(!$first -or $first.Operand.Name -ne 'diagnosticsEnabled'){throw 'Periodic logging must be gated by DiagnosticsEnabled/DetailedGpuTimings first.'}
  if(!($move | Where-Object {$_.OpCode.Name -eq 'ldc.r4' -and [float]$_.Operand -eq 30}) -or !($move | Where-Object {$_.OpCode.Name -eq 'ldc.r4' -and [float]$_.Operand -eq 5})){throw 'Normal and developer logging cadences must both remain available.'}
 } finally {$assembly.Dispose()}
 if($GameDir){

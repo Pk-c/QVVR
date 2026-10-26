@@ -73,6 +73,10 @@ try {
  if((Read-ArchiveText 'PC/.doorstop_version').Trim() -ne '4.5.0'){throw 'Unexpected Doorstop version.'}
  $config=Read-ArchiveText 'PC/BepInEx/config/dev.qvvr.prototype.cfg'
  if($config -notmatch '(?m)^PlacementSaved = false\r?$' -or $config -notmatch '(?m)^Passthrough = false\r?$'){throw 'Release must use the clean unsaved, desktop-safe config template.'}
+ $frameConfig=Read-ArchiveText 'SteamFrame/QVVR-Frame-Defaults.cfg'
+ foreach($line in @('Passthrough = true','DiagnosticsEnabled = false','DetailedGpuTimings = false','CutSurfaceMode = Auto','EyeMsaaSamples = 2','EyeTextureResolutionScale = 1.1','XrResolutionCap = 1.1')){
+  if($frameConfig -notmatch ('(?m)^'+[regex]::Escape($line)+'\r?$')){throw "Frame reference profile must contain: $line"}
+ }
  # Our text only: upstream license/source copyright notices are retained verbatim.
  foreach($name in @('README.txt','SteamFrame/QVVR-Frame-Setup.txt','PC/README.txt','PC/RELEASE-NOTES.txt','PC/qvvr-package.json','PC/BepInEx/config/dev.qvvr.prototype.cfg')){
   $text=Read-ArchiveText $name

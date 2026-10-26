@@ -6,6 +6,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include "OpenXrBackend.h"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -18,7 +19,9 @@ static ID3D11Device *gpu;
 static ID3D11DeviceContext *ctx;
 static bool alpha = true, stageSupported = true, render = true, tracking = true, failWait = false;
 static bool running = false, frameExtension = true;
-static bool expectOpaqueScene = false;
+static bool expectOpaqueScene = false, failMipSwapchain = false, failHudSwapchain = false;
+static int expectedLayers = 1, mipSwapchainAttempts = 0, expectedQuadWidth = 32, expectedQuadHeight = 16;
+static XrCompositionLayerQuad lastQuad = {};
 static int phase = 0, waits = 0, begins = 0, ends = 0, sessions = 0, destroyed = 0, localSpaces = 0;
 static int eventIndex = 0, eventCount = 2, swapIndex = 0, actionIndex = 0, handIndex = 0;
 static int suggestions = 0, copies = 0;
@@ -27,7 +30,7 @@ static XrTime predicted = 100000;
 static XrSessionState events[4] = {XR_SESSION_STATE_READY, XR_SESSION_STATE_FOCUSED};
 static std::map<std::string, XrPath> paths;
 static std::map<XrAction, std::string> actions;
-struct Swap { ID3D11Texture2D *texture = nullptr; bool acquired = false, waited = false; } swaps[2];
+struct Swap { ID3D11Texture2D *texture = nullptr; bool acquired = false, waited = false; UINT mips = 1; } swaps[3];
 template<typename T> static T Handle(int value) { return reinterpret_cast<T>(static_cast<uintptr_t>(value)); }
 static XrPosef Pose(float x, float y, float z) {
     XrPosef p = {}; p.orientation.y = p.orientation.w = sqrtf(.5f); p.position = {x,y,z}; return p;
@@ -89,10 +92,14 @@ XrResult XRAPI_CALL xrEnumerateViewConfigurationViews(XrInstance, XrSystemId, Xr
         out[i].maxImageRectWidth=out[i].maxImageRectHeight=64; } return XR_SUCCESS;
 }
 XrResult XRAPI_CALL xrCreateSwapchain(XrSession, const XrSwapchainCreateInfo *c, XrSwapchain *out) {
-    assert(swapIndex<2); Swap &s=swaps[swapIndex++];
+    // Eyes are square (32x32 or 48x48); HUD swapchains are 2:1.
+    if (c->width==2*c->height && failHudSwapchain) return XR_ERROR_RUNTIME_FAILURE;
+    if (c->mipCount>1) { mipSwapchainAttempts++; if (failMipSwapchain) return XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED; }
+    int free=0; while(free<3 && swaps[free].texture) free++;
+    assert(free<3); swapIndex++; Swap &s=swaps[free];
     D3D11_TEXTURE2D_DESC d={}; d.Width=c->width; d.Height=c->height; d.Format=static_cast<DXGI_FORMAT>(c->format);
-    d.MipLevels=d.ArraySize=d.SampleDesc.Count=1; d.BindFlags=D3D11_BIND_RENDER_TARGET;
-    assert(SUCCEEDED(gpu->CreateTexture2D(&d,nullptr,&s.texture))); s.acquired=s.waited=false;
+    d.MipLevels=c->mipCount; d.ArraySize=d.SampleDesc.Count=1; d.BindFlags=D3D11_BIND_RENDER_TARGET;
+    assert(SUCCEEDED(gpu->CreateTexture2D(&d,nullptr,&s.texture))); s.acquired=s.waited=false; s.mips=c->mipCount;
     *out=reinterpret_cast<XrSwapchain>(&s); return XR_SUCCESS;
 }
 XrResult XRAPI_CALL xrDestroySwapchain(XrSwapchain handle) { auto s=reinterpret_cast<Swap*>(handle); assert(!s->acquired); s->texture->Release(); s->texture=nullptr; return XR_SUCCESS; }
@@ -130,9 +137,18 @@ XrResult XRAPI_CALL xrGetActionStateFloat(XrSession, const XrActionStateGetInfo 
 XrResult XRAPI_CALL xrGetActionStateVector2f(XrSession, const XrActionStateGetInfo*, XrActionStateVector2f *out) { out->isActive=true; out->currentState={.3f,-.5f}; return XR_SUCCESS; }
 XrResult XRAPI_CALL xrEndFrame(XrSession, const XrFrameEndInfo *e) {
     assert(phase==2 && e->displayTime==predicted && e->environmentBlendMode==XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND);
-    assert(!swaps[0].acquired && !swaps[1].acquired);
+    assert(!swaps[0].acquired && !swaps[1].acquired && !swaps[2].acquired);
     if(e->layerCount) {
-        assert(e->layerCount==1); auto p=reinterpret_cast<const XrCompositionLayerProjection*>(e->layers[0]);
+        assert(e->layerCount==static_cast<uint32_t>(expectedLayers)); auto p=reinterpret_cast<const XrCompositionLayerProjection*>(e->layers[0]);
+        assert(p->type==XR_TYPE_COMPOSITION_LAYER_PROJECTION);
+        if(e->layerCount==2) {
+            auto q=reinterpret_cast<const XrCompositionLayerQuad*>(e->layers[1]);
+            assert(q->type==XR_TYPE_COMPOSITION_LAYER_QUAD && q->space==Handle<XrSpace>(10));
+            assert(q->layerFlags==XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT && q->eyeVisibility==XR_EYE_VISIBILITY_BOTH);
+            assert(q->subImage.swapchain==reinterpret_cast<XrSwapchain>(&swaps[2]) && q->subImage.imageArrayIndex==0);
+            assert(q->subImage.imageRect.offset.x==0 && q->subImage.imageRect.extent.width==expectedQuadWidth && q->subImage.imageRect.extent.height==expectedQuadHeight);
+            lastQuad=*q;
+        }
         assert(p->viewCount==2 && p->space==Handle<XrSpace>(10));
         assert(p->layerFlags==(expectOpaqueScene ? 0 : XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT));
         assert(Near(p->views[0].pose.position.z,3.032f) && Near(p->views[1].pose.position.z,2.968f));
@@ -148,6 +164,35 @@ static ID3D11Texture2D *Source(bool opaqueColor = false) {
     d.Format=DXGI_FORMAT_B8G8R8A8_UNORM; d.BindFlags=D3D11_BIND_SHADER_RESOURCE;
     D3D11_SUBRESOURCE_DATA data={pixels,128,0}; ID3D11Texture2D *texture=nullptr;
     assert(SUCCEEDED(gpu->CreateTexture2D(&d,&data,&texture))); return texture;
+}
+// 32x16 HUD with a full mip chain: mip 0 top half opaque white, bottom half
+// transparent (or additive gray with alpha 0); smaller mips distinct opaque grays
+// so the trilinear resample's level selection is observable.
+static ID3D11Texture2D *HudSource(bool additive = false) {
+    D3D11_TEXTURE2D_DESC d={}; d.Width=32; d.Height=16; d.MipLevels=6; d.ArraySize=d.SampleDesc.Count=1;
+    d.Format=DXGI_FORMAT_B8G8R8A8_UNORM; d.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+    static uint32_t pixels[6][512]; D3D11_SUBRESOURCE_DATA data[6]={};
+    for(int m=0;m<6;m++) { UINT w=32u>>m, h=(std::max)(1u,16u>>m);
+        for(UINT y=0;y<h;y++) for(UINT x=0;x<w;x++) { uint32_t g=(m+1)*30u;
+            pixels[m][y*w+x]=m==0?(y<8?0xffffffffu:(additive?0x00808080u:0u)):(0xff000000u|(g<<16)|(g<<8)|g); }
+        data[m]={pixels[m],w*4,0}; }
+    ID3D11Texture2D *texture=nullptr; assert(SUCCEEDED(gpu->CreateTexture2D(&d,data,&texture))); return texture;
+}
+// Reads one pixel of one mip of the HUD swapchain texture.
+static uint32_t HudPixel(UINT mip, UINT x, UINT y) {
+    D3D11_TEXTURE2D_DESC d={}; swaps[2].texture->GetDesc(&d); d.Usage=D3D11_USAGE_STAGING; d.BindFlags=0; d.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D *read=nullptr; assert(SUCCEEDED(gpu->CreateTexture2D(&d,nullptr,&read))); ctx->CopyResource(read,swaps[2].texture);
+    D3D11_MAPPED_SUBRESOURCE data={}; UINT sub=D3D11CalcSubresource(mip,0,d.MipLevels);
+    assert(SUCCEEDED(ctx->Map(read,sub,D3D11_MAP_READ,0,&data)));
+    uint32_t value=*reinterpret_cast<uint32_t*>(static_cast<unsigned char*>(data.pData)+y*data.RowPitch+x*4);
+    ctx->Unmap(read,sub); read->Release(); return value;
+}
+static bool NearByte(uint32_t pixel, int shift, int expected) { return abs(int((pixel>>shift)&255u)-expected)<=1; }
+static void SubmitHud(ID3D11Texture2D *eyes, ID3D11Texture2D *hudTexture, const qvvr::HudLayer &hud, int layers, int expectedCopies) {
+    qvvr::OpenXrFrame frame={}; vr::HmdMatrix34_t head={}; int before=copies; expectedLayers=layers;
+    assert(qvvr::PrepareOpenXrFrame(frame)==1 && qvvr::BeginOpenXrFrame(eyes));
+    assert(qvvr::SubmitOpenXrFrame(eyes,eyes,head,true,false,hudTexture,&hud) && copies==before+expectedCopies);
+    expectedLayers=1;
 }
 static void CheckSyntheticAlpha(ID3D11Texture2D *source) {
     D3D11_TEXTURE2D_DESC d={}; source->GetDesc(&d); d.Usage=D3D11_USAGE_STAGING; d.BindFlags=0; d.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
@@ -208,6 +253,40 @@ int main() {
     assert(qvvr::PrepareOpenXrFrame(frame)==1&&qvvr::BeginOpenXrFrame(texture));
     assert(qvvr::SubmitOpenXrFrame(texture,texture,unusedHead,true));
     CheckSyntheticAlpha(swaps[0].texture); // Back to gameplay: passthrough restored.
+    // HUD compositor quad: created lazily as a single-level swapchain, resampled
+    // from the mipmapped capture, copied only on a new content version.
+    assert(qvvr::OpenXrHudStatus()==0);
+    auto hudTexture=HudSource();
+    qvvr::HudLayer hud={.25f,1.5f,-1.4f, 0,0,0,2, 1.8f,1.f, 1u,7u};
+    SubmitHud(texture,hudTexture,hud,2,3);
+    assert(qvvr::OpenXrHudStatus()==1 && swaps[2].mips==1 && mipSwapchainAttempts==0);
+    assert(Near(lastQuad.pose.orientation.w,1) && Near(lastQuad.pose.orientation.x,0) && Near(lastQuad.size.width,1.8f) && Near(lastQuad.size.height,1));
+    assert(Near(lastQuad.pose.position.x,.25f) && Near(lastQuad.pose.position.y,1.5f) && Near(lastQuad.pose.position.z,-1.4f));
+    // Y flip like the eyes: source top rows (opaque white) land at the bottom.
+    uint32_t top=HudPixel(0,3,0), bottom=HudPixel(0,3,15);
+    assert(top==0 && NearByte(bottom,24,255) && NearByte(bottom,16,255) && NearByte(bottom,0,255));
+    SubmitHud(texture,hudTexture,hud,2,2); // Unchanged HUD: quad reuses the released image, no copy.
+    hud.version=8; SubmitHud(texture,hudTexture,hud,2,3);
+    hud.visible=0; SubmitHud(texture,hudTexture,hud,1,2);
+    hud.visible=1; hud.width=0; SubmitHud(texture,hudTexture,hud,1,2); hud.width=1.8f;
+    hud.qw=0; SubmitHud(texture,hudTexture,hud,1,2); hud.qw=1;
+    SubmitHud(texture,hudTexture,hud,2,2); // Valid again: no recopy needed.
+    // Additive HUD pixels keep alpha 0 (pure added light), with decoded color.
+    auto additiveHud=HudSource(true);
+    SubmitHud(texture,additiveHud,hud,2,3);
+    uint32_t glow=HudPixel(0,3,0);
+    assert(NearByte(glow,24,0) && NearByte(glow,16,128) && NearByte(glow,0,128));
+    // Width cap: half-size swapchain samples the next mip level (trilinear LOD 1).
+    auto flatHud=HudSource(); qvvr::SetOpenXrHudMaxWidth(16); expectedQuadWidth=16; expectedQuadHeight=8;
+    SubmitHud(texture,flatHud,hud,2,3); assert(swaps[2].mips==1 && qvvr::OpenXrHudStatus()==1);
+    uint32_t mipOne=HudPixel(0,5,5); assert(NearByte(mipOne,24,255) && NearByte(mipOne,16,60) && NearByte(mipOne,0,60));
+    qvvr::SetOpenXrHudMaxWidth(0); expectedQuadWidth=32; expectedQuadHeight=16;
+    // A runtime refusing the HUD swapchain: projection continues, HUD stays in eyes.
+    auto refusedHud=HudSource(); failHudSwapchain=true;
+    SubmitHud(texture,refusedHud,hud,1,2); assert(qvvr::OpenXrHudStatus()==-1 && !swaps[2].texture); failHudSwapchain=false;
+    SubmitHud(texture,refusedHud,hud,1,2); assert(qvvr::OpenXrHudStatus()==-1); // Sticky until session restart.
+    additiveHud->Release();
+    hudTexture->Release(); flatHud->Release(); refusedHud->Release();
     auto cadence=qvvr::ReadOpenXrPacing();
     assert(cadence.periodMs>13&&cadence.periodMs<15&&cadence.intervals>0);
     assert(cadence.maximumQueueAgeMs>=0&&cadence.maximumCopySubmitMs>=0);
@@ -219,7 +298,7 @@ int main() {
     assert(qvvr::PrepareOpenXrFrame(frame)); qvvr::CancelOpenXrFrame(); assert(phase==0);
     events[0]=XR_SESSION_STATE_STOPPING; eventIndex=0; eventCount=1;
     assert(!qvvr::PrepareOpenXrFrame(frame) && !running);
-    qvvr::ShutdownOpenXr(); assert(!qvvr::OpenXrRequested() && qvvr::OpenXrStatus()==0);
+    qvvr::ShutdownOpenXr(); assert(!qvvr::OpenXrRequested() && qvvr::OpenXrStatus()==0 && qvvr::OpenXrHudStatus()==0);
     events[0]=XR_SESSION_STATE_READY; events[1]=XR_SESSION_STATE_FOCUSED; eventCount=2;
     stageSupported=false; frameExtension=false; qvvr::ConfigureOpenXr(true);
     assert(qvvr::InitializeExclusiveOpenXr(texture,1.5f,width,height) && width==48 && localSpaces==1 && suggestions==1);
@@ -228,5 +307,5 @@ int main() {
     assert(!qvvr::InitializeExclusiveOpenXr(texture,1,width,height) && sessions==oldSessions && qvvr::OpenXrError()==XR_ERROR_ENVIRONMENT_BLEND_MODE_UNSUPPORTED);
     qvvr::ShutdownOpenXr(); assert(begins==ends && destroyed==3);
     texture->Release(); ctx->Release(); gpu->Release();
-    puts("Exclusive XR fake-runtime/WARP passed: ABI, Frame/Touch actions, exact stereo poses/FOV, ALPHA_BLEND, GPU alpha/Y-copy, one-frame backpressure, cancel, no-render, tracking loss, STOPPING, LOCAL fallback, failure cleanup, unsupported alpha. No OpenVR linked or real XR session started.");
+    puts("Exclusive XR fake-runtime/WARP passed: ABI, Frame/Touch actions, exact stereo poses/FOV, ALPHA_BLEND, GPU alpha/Y-copy, HUD quad layer (single-level resample, additive alpha, versioned copy, refusal), one-frame backpressure, cancel, no-render, tracking loss, STOPPING, LOCAL fallback, failure cleanup, unsupported alpha. No OpenVR linked or real XR session started.");
 }

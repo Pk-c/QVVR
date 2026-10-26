@@ -28,6 +28,6 @@ function Get-QvvrPackageFiles([string]$Root,[string]$Configuration='Release') {
 function Get-QvvrReleaseExtraFiles([string]$Root) {
  $files=[ordered]@{}
  $files['README.txt']=Join-Path $Root 'package-assets/RELEASE-README.txt'
- foreach($name in @('QVVR-Frame-Setup.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt')){$files["SteamFrame/$name"]=Join-Path $Root "package-assets/$name"}
+ foreach($name in @('QVVR-Frame-Setup.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt','QVVR-Frame-Defaults.cfg')){$files["SteamFrame/$name"]=Join-Path $Root "package-assets/$name"}
  return $files
 }

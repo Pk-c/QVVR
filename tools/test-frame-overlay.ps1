@@ -102,6 +102,18 @@ assert test ! -d "$game/.qvvr-backups/Uninstall-session-repeated"
 run Uninstall remove-config 1
 assert test ! -f "$game/BepInEx/config/dev.qvvr.prototype.cfg"
 assert test "$(cat "$game/.qvvr-backups/Uninstall-session-remove-config/BepInEx/config/dev.qvvr.prototype.cfg")" = 'my settings'
+# Fresh install with the shipped Frame profile: it becomes the config, and an
+# existing config is still never replaced by it. (Undo the loader conflict fixture.)
+cp "$root/session-first/stage/BepInEx/core/BepInEx.dll" "$game/BepInEx/core/BepInEx.dll"
+printf '[VR]\nframe profile\n' >"$root/frame-defaults.cfg"
+mkdir "$root/session-frame-profile"; cp "$payload" "$root/session-frame-profile/package.zip"; cp "$root/frame-defaults.cfg" "$root/session-frame-profile/frame-defaults.cfg"
+sh "$root/manage.sh" Install "$game" "$root/session-frame-profile" 0
+assert cmp -s "$root/frame-defaults.cfg" "$game/BepInEx/config/dev.qvvr.prototype.cfg"
+assert grep -qxF 'BepInEx/config/dev.qvvr.prototype.cfg' "$game/.qvvr-backups/Install-session-frame-profile/installed-files.txt"
+printf 'my settings' >"$game/BepInEx/config/dev.qvvr.prototype.cfg"
+mkdir "$root/session-frame-keep"; cp "$payload" "$root/session-frame-keep/package.zip"; cp "$root/frame-defaults.cfg" "$root/session-frame-keep/frame-defaults.cfg"
+sh "$root/manage.sh" Install "$game" "$root/session-frame-keep" 0
+assert test "$(cat "$game/BepInEx/config/dev.qvvr.prototype.cfg")" = 'my settings'
 assert test "$(cat "$game/QV.exe")" = 'original game'
 assert test "$(cat "$game/BepInEx/plugins/OtherMod/keep.dll")" = 'other mod'
 echo "Frame POSIX overlay: $checks assertions passed (local fixtures, not hardware deployment)."

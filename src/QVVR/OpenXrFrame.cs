@@ -49,4 +49,37 @@ namespace QVVR
         internal OpenXrFov LeftFov, RightFov;
         internal OpenXrHand LeftHand, RightHand;
     }
+    // Native qvvr::HudLayer: compositor quad pose/size in the XR base space.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct OpenXrHudLayer
+    {
+        internal float PositionX, PositionY, PositionZ, RotationX, RotationY, RotationZ, RotationW, Width, Height;
+        internal uint Visible, Version;
+
+        // Inverse of the eye mapping world = rigPosition + rigRotation *
+        // (calibrationInverse * tracking) * unitsPerMeter, then Unity's
+        // left-handed tracking space back to OpenXR right-handed (mirror Z).
+        // Managed math only (no engine calls): callers pass the calibration
+        // matrix and its rotation. Allocation-free, safe every frame.
+        internal void SetFromWorld(Vector3 worldPosition, Quaternion worldRotation, Vector3 worldScale,
+            Vector3 rigPosition, Quaternion rigRotation, float unitsPerMeter,
+            Matrix4x4 calibration, Quaternion calibrationRotation, uint version)
+        {
+            Visible = 0;
+            if (!(unitsPerMeter > 0f) || float.IsInfinity(unitsPerMeter)) return;
+            Quaternion inverseRig = new Quaternion(-rigRotation.x, -rigRotation.y, -rigRotation.z, rigRotation.w);
+            Vector3 local = inverseRig * (worldPosition - rigPosition) / unitsPerMeter;
+            Vector3 tracking = calibration.MultiplyPoint3x4(local);
+            Quaternion rotation = calibrationRotation * inverseRig * worldRotation;
+            PositionX = tracking.x; PositionY = tracking.y; PositionZ = -tracking.z;
+            RotationX = -rotation.x; RotationY = -rotation.y; RotationZ = rotation.z; RotationW = rotation.w;
+            Width = Mathf.Abs(worldScale.x) / unitsPerMeter;
+            Height = Mathf.Abs(worldScale.y) / unitsPerMeter;
+            Version = version;
+            Visible = Finite(PositionX) && Finite(PositionY) && Finite(PositionZ) && Finite(RotationW) &&
+                Width > 0f && Height > 0f && Finite(Width) && Finite(Height) ? 1u : 0u;
+        }
+
+        private static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
+    }
 }

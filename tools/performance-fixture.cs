@@ -69,9 +69,11 @@ namespace UnityEngine {
  }
 }
 namespace UnityEngine.UI {
- public class CanvasRenderer {public UnityEngine.Color Color;public UnityEngine.Color GetColor(){return Color;}}
+ public class CanvasRenderer {public UnityEngine.Color Color;public UnityEngine.Color GetColor(){return Color;}
+  public bool cull;public float Alpha=1,InheritedAlpha=1;public float GetAlpha(){return Alpha;}public float GetInheritedAlpha(){return InheritedAlpha;}}
  public class Graphic {
   public UnityEngine.GameObject gameObject=new UnityEngine.GameObject();public CanvasRenderer canvasRenderer=new CanvasRenderer();
+  public UnityEngine.Color color=new UnityEngine.Color{r=1,g=1,b=1,a=1};
   public bool enabled=true;public virtual UnityEngine.Material material{get;set;}public virtual UnityEngine.Material defaultMaterial{get;set;}
   UnityEngine.Events.UnityAction vertices,materials,layout;
   public int Listeners, Registrations;

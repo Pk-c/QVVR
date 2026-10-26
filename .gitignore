@@ -26,6 +26,7 @@ BepInEx/
 QV_Data/
 *.cfg
 !package-assets/dev.qvvr.prototype.cfg
+!package-assets/QVVR-Frame-Defaults.cfg
 
 # Dependencies, game assets and generated binaries must never enter history.
 *.dll

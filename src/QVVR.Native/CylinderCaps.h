@@ -11,10 +11,17 @@
 namespace qvvr
 {
 // Optional cross-section pass. Count uncut, opaque mesh front/back crossings
-// before the cylinder ENTRY along each ray, in a PRIVATE depth/stencil target.
-// Non-zero winding means that boundary intersects a solid. Composite black at
-// that boundary with real eye depth, BEFORE transparent draws and outside clip.
-// Never sample/read back a game eye; no original shader/mesh mutation.
+// before the cylinder ENTRY along each ray. Non-zero winding means that boundary
+// intersects a solid. Composite black at that boundary with real eye depth,
+// BEFORE transparent draws and outside clip. Never sample/read back a game eye;
+// no original shader/mesh mutation.
+//
+// Inline mode (default when the eye depth has stencil and the game does not use
+// stencil): count in the eye's OWN stencil with an analytic entry test, then
+// composite through the stencil test. Nothing ever rebinds render targets, so
+// tiled GPUs (Steam Frame via DXVK) keep the eye in tile memory; the private
+// mode swapped targets twice per replayed draw (~7 ms on Frame). Private mode
+// remains for stencil-less depth, game stencil use or the rollback switch.
 class CylinderCaps
 {
     template<class T> static void Drop(T *&p) { if (p) p->Release(); p = nullptr; }
@@ -27,6 +34,30 @@ class CylinderCaps
     ID3D11DepthStencilState *initializeDepth = nullptr, *countDepth[2] = {}, *compositeDepth[2] = {};
     ID3D11RasterizerState *raster[2] = {};
     ID3D11BlendState *blend = nullptr;
+    ID3D11PixelShader *countInline = nullptr, *capInline = nullptr;
+    ID3D11DepthStencilState *countInlineState = nullptr, *compositeInline[2] = {};
+    ID3D11BlendState *noColor = nullptr;
+    ID3D11DepthStencilView *inlineDepth = nullptr; // Eye DSV holding this eye's count.
+    ID3D11BlendState *savedBlend = nullptr; FLOAT savedFactors[4] = {}; UINT savedSampleMask = 0;
+    ID3D11Buffer *savedPixelBuffer = nullptr;
+    bool inlineAvailable = false, inlineMode = false;
+    unsigned shaderVariants = 0; // Bit 0: early-reject count PS, bit 1: conservative-depth composite.
+    // Back-face mode (capMode 1): ShaderClip marks the facing of each opaque
+    // world surface in the eye stencil (front 0, back 1) while drawing it; a
+    // trivial stencil-tested pass then paints visible interiors black. No
+    // replay, no ray math, no depth output.
+    std::atomic<int> capMode{0};
+    ID3D11PixelShader *backFacePixel = nullptr;
+    ID3D11DepthStencilState *backFaceComposite = nullptr;
+    bool backFaceAvailable = false, backFaceMarked = false, backFaceComposited = false;
+    ID3D11DepthStencilView *backFaceDepth = nullptr;
+    D3D11_TEXTURE2D_DESC backFaceDesc = {};
+    std::atomic<unsigned> backFaceEyes{0};
+    // Graphics thread: set by the OMSetRenderTargets hook. While false, inline
+    // replays skip OMGetRenderTargets (8 view AddRef/Release round trips each).
+    bool targetsChanged = true;
+    std::atomic<bool> inlineEnabled{true}, stencilConflict{false};
+    std::atomic<unsigned> inlineEyes{0}, privateEyes{0};
     struct Target
     {
         ID3D11Texture2D *eye = nullptr, *depth = nullptr;
@@ -84,8 +115,10 @@ class CylinderCaps
         code->Release(); return SUCCEEDED(hr);
     }
 
+    // bindTargets=false (inline mode): draw into the targets already bound, so
+    // DXVK keeps the same render pass; color only selects the blend state.
     void Fullscreen(ID3D11RenderTargetView *color, ID3D11DepthStencilView *depth,
-        ID3D11PixelShader *pixel, ID3D11DepthStencilState *state, ID3D11ShaderResourceView *stencil)
+        ID3D11PixelShader *pixel, ID3D11DepthStencilState *state, ID3D11ShaderResourceView *stencil, bool bindTargets = true)
     {
         // Explicit save/restore: context-state swaps can replace the D3D runtime
         // dispatch table and invalidate Unity's intercepted method entry points.
@@ -101,7 +134,7 @@ class CylinderCaps
         ID3D11Buffer *cb = nullptr; ID3D11ShaderResourceView *srv = nullptr;
         context->PSGetConstantBuffers(0,1,&cb); context->PSGetShaderResources(0,1,&srv);
         ID3D11RenderTargetView *rt[8] = {}; ID3D11DepthStencilView *dsv = nullptr;
-        context->OMGetRenderTargets(8,rt,&dsv);
+        if (bindTargets) context->OMGetRenderTargets(8,rt,&dsv);
         ID3D11DepthStencilState *depthState = nullptr; UINT ref;
         context->OMGetDepthStencilState(&depthState,&ref);
         ID3D11BlendState *blendState = nullptr; FLOAT factors[4]; UINT sampleMask;
@@ -116,16 +149,17 @@ class CylinderCaps
         context->PSSetShader(pixel, nullptr, 0);
         context->PSSetConstantBuffers(0, 1, &buffer);
         context->PSSetShaderResources(0, 1, &stencil);
-        D3D11_VIEWPORT viewport = {0, 0, float(target->desc.Width), float(target->desc.Height), 0, 1};
+        const D3D11_TEXTURE2D_DESC &size = target ? target->desc : backFaceDesc;
+        D3D11_VIEWPORT viewport = {0, 0, float(size.Width), float(size.Height), 0, 1};
         context->RSSetViewports(1, &viewport);
         context->RSSetState(raster[0]);
         context->OMSetDepthStencilState(state, 0);
         context->OMSetBlendState(color ? blend : nullptr, nullptr, 0xffffffff);
-        context->OMSetRenderTargets(color ? 1 : 0, color ? &color : nullptr, depth);
+        if (bindTargets) context->OMSetRenderTargets(color ? 1 : 0, color ? &color : nullptr, depth);
         context->Draw(3, 0);
         // Unbind mask before its next depth/stencil use (no DSV/SRV hazards).
         ID3D11ShaderResourceView *none = nullptr; context->PSSetShaderResources(0,1,&none);
-        context->OMSetRenderTargets(8,rt,dsv);
+        if (bindTargets) context->OMSetRenderTargets(8,rt,dsv);
         context->OMSetDepthStencilState(depthState,ref); context->OMSetBlendState(blendState,factors,sampleMask);
         context->RSSetState(rs); context->RSSetViewports(viewportCount,viewports);
         context->VSSetShader(vs,vc,vn); context->PSSetShader(ps,pc,pn);
@@ -201,7 +235,83 @@ public:
         rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
         if (FAILED(device->CreateBlendState(&bs, &blend))) return false;
         meshes.reserve(256);
+        inlineAvailable = InitializeInline(base);
+        backFaceAvailable = InitializeBackFace();
         initialized = true; return true;
+    }
+
+    // Optional: any failure keeps the exact (winding) modes.
+    bool InitializeBackFace()
+    {
+        if (!Pixel("float4 main(float4 p:SV_Position):SV_Target{return float4(0,0,0,1);}", &backFacePixel)) return false;
+        D3D11_DEPTH_STENCIL_DESC ds = {};
+        ds.DepthEnable = FALSE; ds.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO; ds.DepthFunc = D3D11_COMPARISON_ALWAYS;
+        ds.StencilEnable = TRUE; ds.StencilReadMask = 0xff; ds.StencilWriteMask = 0;
+        ds.StencilWriteMask = 0xff;
+        // Interior (1) vs ref 0; passing pixels reset to 0, so the eye leaves
+        // with a zero stencil without a second mid-pass clear.
+        ds.FrontFace.StencilFunc = ds.BackFace.StencilFunc = D3D11_COMPARISON_NOT_EQUAL;
+        ds.FrontFace.StencilPassOp = ds.BackFace.StencilPassOp = D3D11_STENCIL_OP_ZERO;
+        ds.FrontFace.StencilFailOp = ds.BackFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+        ds.FrontFace.StencilDepthFailOp = ds.BackFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+        return SUCCEEDED(device->CreateDepthStencilState(&ds, &backFaceComposite));
+    }
+
+    // Optional: any failure keeps the private-target path.
+    bool InitializeInline(const std::string &base)
+    {
+        // Count only crossings nearer than the analytic cylinder entry (the
+        // private mode's entry depth test), into stencil, without color.
+        // Optimized variants first, then the plain ones: Proton's runtime HLSL
+        // compiler (Steam Frame) accepts less than Windows d3dcompiler.
+        // Most replayed fragments lie INSIDE the cylinder (always behind the
+        // entry): one transform rejects them before the ray intersection.
+        std::string countTail = "float z,a;if(!boundary(p.xy,z,a))discard;if(options.x>.5?p.z<z:p.z>z)discard;}";
+        std::string count = base + "void main(float4 p:SV_Position){"
+            "float4 h=mul(pixelToLocal,float4(p.xyz,1));"
+            "if(abs(h.w)>1e-12){float3 l=h.xyz/h.w;if(dot(l.xz,l.xz)<limits.x&&abs(l.y)<limits.y)discard;}" + countTail;
+        if (Pixel(count.c_str(), &countInline)) shaderVariants |= 1;
+        else if (!Pixel((base + "void main(float4 p:SV_Position){" + countTail).c_str(), &countInline)) return false;
+        // Conservative depth (>= the full-screen triangle's z=0) keeps the early
+        // stencil test, so only winding!=0 pixels run the boundary shader.
+        // (It requires centroid position; a full-screen triangle covers whole
+        // pixels, so the centroid is the pixel center.)
+        std::string compositeTail = "{float z,a;if(!boundary(p.xy,z,a))discard;"
+            "Result r;r.depth=z;r.color=options.y>.5?float4(0,0,0,a):float4(0,limits.w*(1-a),0,1);return r;}";
+        std::string composite = base + "struct Result{float4 color:SV_Target;float depth:SV_DepthGreaterEqual;};"
+            "Result main(noperspective centroid float4 p:SV_Position)" + compositeTail;
+        if (Pixel(composite.c_str(), &capInline)) shaderVariants |= 2;
+        else if (!Pixel((base + "struct Result{float4 color:SV_Target;float depth:SV_Depth;};Result main(float4 p:SV_Position)" +
+            compositeTail).c_str(), &capInline)) return false;
+        D3D11_DEPTH_STENCIL_DESC ds = {};
+        ds.DepthEnable = FALSE; ds.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO; ds.DepthFunc = D3D11_COMPARISON_ALWAYS;
+        ds.StencilEnable = TRUE; ds.StencilReadMask = ds.StencilWriteMask = 0xff;
+        ds.FrontFace.StencilFunc = ds.BackFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+        ds.FrontFace.StencilPassOp = D3D11_STENCIL_OP_INCR;
+        ds.BackFace.StencilPassOp = D3D11_STENCIL_OP_DECR;
+        ds.FrontFace.StencilFailOp = ds.BackFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+        ds.FrontFace.StencilDepthFailOp = ds.BackFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+        if (FAILED(device->CreateDepthStencilState(&ds, &countInlineState))) return false;
+        for (int reverse = 0; reverse < 2; ++reverse)
+        {
+            ds.DepthEnable = TRUE; ds.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+            ds.DepthFunc = reverse ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_LESS_EQUAL;
+            ds.StencilWriteMask = 0;
+            ds.FrontFace.StencilFunc = ds.BackFace.StencilFunc = D3D11_COMPARISON_NOT_EQUAL; // winding != 0
+            ds.FrontFace.StencilPassOp = ds.BackFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+            if (FAILED(device->CreateDepthStencilState(&ds, &compositeInline[reverse]))) return false;
+        }
+        D3D11_BLEND_DESC bs = {};
+        bs.RenderTarget[0].RenderTargetWriteMask = 0;
+        return SUCCEEDED(device->CreateBlendState(&bs, &noColor));
+    }
+
+    static bool HasStencil(ID3D11DepthStencilView *view)
+    {
+        if (!view) return false;
+        D3D11_DEPTH_STENCIL_VIEW_DESC desc = {};
+        view->GetDesc(&desc);
+        return desc.Format == DXGI_FORMAT_D24_UNORM_S8_UINT || desc.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
     }
 
     void SetTargets(ID3D11Texture2D *left, ID3D11Texture2D *right)
@@ -276,6 +386,7 @@ public:
             meshes.clear();
             meshCount.store(0);
         }
+        stencilConflict.store(false); // A new scene may not use stencil.
         std::lock_guard<std::mutex> lock(targetMutex);
         for (auto &t : targets) { Drop(t.stencil); Drop(t.view); Drop(t.depth); }
     }
@@ -289,16 +400,68 @@ public:
         constants.options[0] = reversed ? 1.f : 0.f;
         constants.options[1] = transparent ? 1.f : 0.f;
         constants.options[2] = enabled ? 1.f : 0.f;
-        target = nullptr; rendered = dirty = false;
+        target = nullptr; rendered = dirty = inlineMode = false;
+        targetsChanged = true;
+        backFaceMarked = backFaceComposited = false;
         Drop(frameTarget.stencil); Drop(frameTarget.view); Drop(frameTarget.depth); Drop(frameTarget.eye);
+        Drop(inlineDepth); Drop(backFaceDepth);
     }
     bool Active() const { return initialized && constants.options[2] > .5f; }
+    void SetInlineEnabled(bool enabled) { inlineEnabled.store(enabled); }
+    void TargetsChanged() { targetsChanged = true; }
+    void SetMode(int mode) { capMode.store(mode); }
+    // Graphics thread (ShaderClip state hooks).
+    bool BackFaceWanted() const
+    {
+        return Active() && capMode.load() == 1 && backFaceAvailable && !stencilConflict.load() && !backFaceComposited;
+    }
+    void FlagStencilConflict() { stencilConflict.store(true); }
+    // First marking draw of an eye: start from a zero stencil in that depth.
+    void BackFaceMarked(ID3D11DepthStencilView *depth)
+    {
+        if (backFaceMarked || !depth) return;
+        ID3D11Resource *resource = nullptr; depth->GetResource(&resource);
+        ID3D11Texture2D *texture = nullptr;
+        if (resource) resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&texture));
+        Drop(resource);
+        if (!texture) return;
+        texture->GetDesc(&backFaceDesc); Drop(texture);
+        context->ClearDepthStencilView(depth, D3D11_CLEAR_STENCIL, 0.f, 0);
+        backFaceDepth = depth; backFaceDepth->AddRef();
+        backFaceMarked = true; backFaceEyes.fetch_add(1);
+    }
+    unsigned BackFaceEyes() const { return backFaceEyes.load(); }
+    // Bound index buffer is a registered solid that may reach the cut this
+    // frame. Same selection as the exact replay, without the replay.
+    bool BackFaceMesh()
+    {
+        ID3D11Buffer *indices = nullptr;
+        DXGI_FORMAT format; UINT offset;
+        context->IAGetIndexBuffer(&indices, &format, &offset);
+        bool eligible = false;
+        if (indices)
+        {
+            std::lock_guard<std::mutex> lock(meshMutex);
+            for (const auto &mesh : meshes) if (mesh.buffer == indices)
+            {
+                eligible = (!mesh.bounded || CapMayIntersect(mesh.bounds, cullVolume)) &&
+                    !skipFrame.Contains(reinterpret_cast<uintptr_t>(indices), meshGeneration.load());
+                if (!eligible) skippedVolumes.fetch_add(1);
+                break;
+            }
+        }
+        Drop(indices);
+        return eligible;
+    }
 
     // Called only for eligible opaque indexed draws. Caller bypasses its own
     // hooks while replay/composite modifies graphics state.
     bool BeforeVolume(ID3D11PixelShader *original)
     {
         if (!Active() || rendered) return false;
+        // Back-face mode marked this eye (the draw hook marks first): no replays.
+        // Stencil-less depth or game stencil use keeps the exact path.
+        if (backFaceMarked && !stencilConflict.load()) return false;
         ID3D11Buffer *indices = nullptr;
         DXGI_FORMAT format; UINT offset;
         context->IAGetIndexBuffer(&indices, &format, &offset);
@@ -315,53 +478,94 @@ public:
         }
         Drop(indices);
         if (!eligible) return false;
-        ID3D11DepthStencilState *ds = nullptr; UINT stencilRef;
-        context->OMGetDepthStencilState(&ds, &stencilRef);
+        // Read once and keep as the state restored by AfterVolume.
+        context->OMGetDepthStencilState(&savedDepth, &savedStencilRef);
         D3D11_DEPTH_STENCIL_DESC depthDesc = {};
-        if (ds) ds->GetDesc(&depthDesc);
+        if (savedDepth) savedDepth->GetDesc(&depthDesc);
         else { depthDesc.DepthEnable = TRUE; depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL; depthDesc.DepthFunc = D3D11_COMPARISON_LESS; }
-        Drop(ds);
+        // The game owns the eye stencil if a cut solid's draw uses it: never
+        // count there again this scene (an already counted eye may glitch once).
+        if (depthDesc.StencilEnable) stencilConflict.store(true);
         // Skip additive/Equal repeats: each base/prepass surface counts once.
         if (!depthDesc.DepthEnable || depthDesc.DepthWriteMask != D3D11_DEPTH_WRITE_MASK_ALL ||
             (depthDesc.DepthFunc != D3D11_COMPARISON_LESS && depthDesc.DepthFunc != D3D11_COMPARISON_LESS_EQUAL &&
-             depthDesc.DepthFunc != D3D11_COMPARISON_GREATER && depthDesc.DepthFunc != D3D11_COMPARISON_GREATER_EQUAL)) return false;
-        context->OMGetRenderTargets(8, savedTargets, &savedDepthView);
-        if (!savedTargets[0] || !savedDepthView) { ReleaseSaved(); return false; }
+             depthDesc.DepthFunc != D3D11_COMPARISON_GREATER && depthDesc.DepthFunc != D3D11_COMPARISON_GREATER_EQUAL)) { ReleaseSaved(); return false; }
+        // Inline replays keep the bound targets: re-read only after the game
+        // changed them (or for the private path, which must restore them).
+        if (!target || !inlineMode || targetsChanged)
+        {
+            context->OMGetRenderTargets(8, savedTargets, &savedDepthView);
+            if (!savedTargets[0] || !savedDepthView) { ReleaseSaved(); return false; }
+        }
         if (!target)
         {
+            bool wantInline = inlineAvailable && inlineEnabled.load() && !stencilConflict.load() && HasStencil(savedDepthView);
             ID3D11Resource *resource = nullptr; savedTargets[0]->GetResource(&resource);
             {
                 std::lock_guard<std::mutex> lock(targetMutex);
-                for (auto &t : targets) if (resource == t.eye && t.stencil && t.view)
+                for (auto &t : targets) if (resource == t.eye && (wantInline || (t.stencil && t.view)))
                 {
                     frameTarget = t;
-                    frameTarget.eye->AddRef(); frameTarget.depth->AddRef();
-                    frameTarget.view->AddRef(); frameTarget.stencil->AddRef();
+                    frameTarget.eye->AddRef();
+                    if (frameTarget.depth) frameTarget.depth->AddRef();
+                    if (frameTarget.view) frameTarget.view->AddRef();
+                    if (frameTarget.stencil) frameTarget.stencil->AddRef();
                     target = &frameTarget; break;
                 }
             }
             Drop(resource);
             if (!target) { ReleaseSaved(); return false; }
             context->UpdateSubresource(buffer, 0, nullptr, &constants, 0, 0);
-            context->ClearDepthStencilView(target->view, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
-                constants.options[0] > .5f ? 0.f : 1.f, 0);
-            Fullscreen(nullptr, target->view, entry, initializeDepth, nullptr);
+            inlineMode = wantInline;
+            if (inlineMode)
+            {
+                // Mid-pass stencil-only clear: no target rebind, no depth loss.
+                inlineDepth = savedDepthView; inlineDepth->AddRef();
+                context->ClearDepthStencilView(inlineDepth, D3D11_CLEAR_STENCIL, 0.f, 0);
+                inlineEyes.fetch_add(1);
+            }
+            else
+            {
+                context->ClearDepthStencilView(target->view, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
+                    constants.options[0] > .5f ? 0.f : 1.f, 0);
+                Fullscreen(nullptr, target->view, entry, initializeDepth, nullptr);
+                privateEyes.fetch_add(1);
+            }
         }
-        context->OMGetDepthStencilState(&savedDepth, &savedStencilRef);
+        else if (inlineMode && targetsChanged && savedDepthView != inlineDepth) { ReleaseSaved(); return false; } // Count stays in one stencil.
+        if (inlineMode) targetsChanged = false; // Bound eye depth verified.
         context->RSGetState(&savedRaster);
         context->PSGetShader(&savedPixel, nullptr, nullptr);
         D3D11_RASTERIZER_DESC rs = {};
         if (savedRaster) savedRaster->GetDesc(&rs);
-        // Empty color target prevents all writes to game eye colors.
-        context->OMSetRenderTargets(0, nullptr, target->view);
-        context->OMSetDepthStencilState(countDepth[constants.options[0] > .5f ? 1 : 0], 0);
         context->RSSetState(raster[rs.FrontCounterClockwise ? 1 : 0]);
-        context->PSSetShader(original, nullptr, 0); // Original alpha-test/discard, no cylinder clip.
+        if (inlineMode)
+        {
+            // Same targets: color writes masked, winding counted in eye stencil.
+            context->OMGetBlendState(&savedBlend, savedFactors, &savedSampleMask);
+            context->PSGetConstantBuffers(0, 1, &savedPixelBuffer);
+            context->OMSetBlendState(noColor, nullptr, 0xffffffff);
+            context->OMSetDepthStencilState(countInlineState, 0);
+            context->PSSetShader(countInline, nullptr, 0);
+            context->PSSetConstantBuffers(0, 1, &buffer);
+        }
+        else
+        {
+            // Empty color target prevents all writes to game eye colors.
+            context->OMSetRenderTargets(0, nullptr, target->view);
+            context->OMSetDepthStencilState(countDepth[constants.options[0] > .5f ? 1 : 0], 0);
+            context->PSSetShader(original, nullptr, 0); // Original alpha-test/discard, no cylinder clip.
+        }
         dirty = true; volumeDraws.fetch_add(1); return true;
     }
     void AfterVolume()
     {
-        context->OMSetRenderTargets(8, savedTargets, savedDepthView);
+        if (inlineMode)
+        {
+            context->OMSetBlendState(savedBlend, savedFactors, savedSampleMask);
+            context->PSSetConstantBuffers(0, 1, &savedPixelBuffer);
+        }
+        else context->OMSetRenderTargets(8, savedTargets, savedDepthView);
         context->OMSetDepthStencilState(savedDepth, savedStencilRef);
         context->RSSetState(savedRaster);
         context->PSSetShader(savedPixel, nullptr, 0);
@@ -369,17 +573,46 @@ public:
     }
     void Composite()
     {
-        if (!Active() || !dirty || rendered || !target) return;
+        if (!Active()) return;
+        if (backFaceMarked && !stencilConflict.load())
+        {
+            if (backFaceComposited) return;
+            ID3D11RenderTargetView *color = nullptr; ID3D11DepthStencilView *depth = nullptr;
+            context->OMGetRenderTargets(1, &color, &depth);
+            if (color && depth == backFaceDepth)
+            {
+                // Black where the nearest opaque surface is a back face. Early
+                // stencil rejects everything else; the pass also re-zeroes it.
+                Fullscreen(color, depth, backFacePixel, backFaceComposite, nullptr, false);
+                backFaceComposited = true;
+                composites.fetch_add(1);
+            }
+            Drop(color); Drop(depth);
+            return;
+        }
+        if (!dirty || rendered || !target) return;
         ID3D11RenderTargetView *color = nullptr; ID3D11DepthStencilView *depth = nullptr;
         context->OMGetRenderTargets(1, &color, &depth);
         ID3D11Resource *resource = nullptr;
         if (color) color->GetResource(&resource);
         if (resource == target->eye && depth)
         {
-            Fullscreen(color, depth, cap[target->desc.SampleDesc.Count > 1 ? 1 : 0],
-                compositeDepth[constants.options[0] > .5f ? 1 : 0], target->stencil);
-            rendered = true;
-            composites.fetch_add(1);
+            if (!inlineMode)
+            {
+                Fullscreen(color, depth, cap[target->desc.SampleDesc.Count > 1 ? 1 : 0],
+                    compositeDepth[constants.options[0] > .5f ? 1 : 0], target->stencil);
+                rendered = true;
+                composites.fetch_add(1);
+            }
+            else if (depth == inlineDepth)
+            {
+                // Per-sample stencil test replaces the private mask read; then
+                // hand Unity back a zero stencil for later passes.
+                Fullscreen(color, depth, capInline, compositeInline[constants.options[0] > .5f ? 1 : 0], nullptr, false);
+                context->ClearDepthStencilView(depth, D3D11_CLEAR_STENCIL, 0.f, 0);
+                rendered = true;
+                composites.fetch_add(1);
+            }
         }
         Drop(resource); Drop(color); Drop(depth);
     }
@@ -387,13 +620,22 @@ public:
     {
         for (auto &t : savedTargets) Drop(t);
         Drop(savedDepthView); Drop(savedDepth); Drop(savedRaster); Drop(savedPixel);
+        Drop(savedBlend); Drop(savedPixelBuffer);
     }
     void End()
     {
         constants.options[2] = 0;
-        target = nullptr;
+        target = nullptr; inlineMode = false;
+        backFaceMarked = backFaceComposited = false;
         Drop(frameTarget.stencil); Drop(frameTarget.view); Drop(frameTarget.depth); Drop(frameTarget.eye);
+        Drop(inlineDepth); Drop(backFaceDepth);
     }
+    void ModeStats(unsigned &inlineCount, unsigned &privateCount, bool &conflict) const
+    {
+        inlineCount = inlineEyes.load(); privateCount = privateEyes.load(); conflict = stencilConflict.load();
+    }
+    // -1 = inline pipeline unavailable, else the optimized-variant bits.
+    int InlineVariants() const { return inlineAvailable ? static_cast<int>(shaderVariants) : -1; }
     void Stats(unsigned &available, unsigned &registered, unsigned &replayed, unsigned &composed) const
     {
         available = initialized ? 1 : 0; registered = meshCount.load();

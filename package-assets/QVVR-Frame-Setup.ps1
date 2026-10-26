@@ -27,7 +27,20 @@ function Get-QvvrInstallFiles {
 # Release ZIP = PC/<overlay> + these files. Only PC/ content is ever uploaded.
 function Get-QvvrReleaseExtraNames {
     'README.txt'
-    foreach ($name in @('QVVR-Frame-Setup.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt')) { "SteamFrame/$name" }
+    foreach ($name in @('QVVR-Frame-Setup.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt','QVVR-Frame-Defaults.cfg')) { "SteamFrame/$name" }
+}
+
+# Steam Frame reference settings, shipped beside this script. Uploaded with an
+# install and used ONLY when the headset has no QVVR config yet.
+function Get-QvvrFrameDefaults {
+    $path=Join-Path $PSScriptRoot 'QVVR-Frame-Defaults.cfg'
+    if (!(Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    $item=Get-Item -LiteralPath $path
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked Frame defaults file is not allowed.' }
+    if ($item.Length -gt 262144) { throw 'Frame defaults file is too large.' }
+    $text=[IO.File]::ReadAllText($path)
+    if ($text -notmatch '(?m)^\[VR\]\r?$' -or $text -match '[\x00]') { throw 'Frame defaults file is not a QVVR config.' }
+    return $item.FullName
 }
 
 function Find-QvvrPackageSource {
@@ -397,6 +410,11 @@ bsdtar -xf "$session/package.zip" -C "$session/stage"
 stage=$session/stage
 sed 's/\r$//' "$stage/qvvr-files.sha256" >"$session/checksums"
 (cd "$stage" && sha256sum -c "$session/checksums") >"$session/verify.log" || fail 'On-device package checksum failed.'
+# A first Frame install starts from the Steam Frame reference profile shipped
+# beside the installer. An existing config is never replaced (skipped below).
+if test -f "$session/frame-defaults.cfg" && test ! -L "$session/frame-defaults.cfg"; then
+    cp "$session/frame-defaults.cfg" "$stage/BepInEx/config/dev.qvvr.prototype.cfg"
+fi
 sed 's/^[0-9a-f]*  //' "$session/checksums" >"$session/files"
 printf '%s\n' qvvr-files.sha256 >>"$session/files"
 # Validate ALL destinations/conflicts before replacing the first file. Shared
@@ -500,7 +518,11 @@ function Invoke-QvvrFrameSetup {
         Invoke-QvvrAdb @('push',$helper,"$remote/manage.sh") | Out-Host
         $remove=if ($RemoveConfig) {'1'} else {'0'}
         Invoke-QvvrAdb @('shell',"sh '$remote/manage.sh' Check '$RemoteGameDir' '$remote' '$remove'") | Out-Host
-        if ($Action -eq 'Install') { Invoke-QvvrAdb @('push',$upload,"$remote/package.zip") | Out-Host }
+        if ($Action -eq 'Install') {
+            Invoke-QvvrAdb @('push',$upload,"$remote/package.zip") | Out-Host
+            $defaults=Get-QvvrFrameDefaults
+            if ($defaults) { Invoke-QvvrAdb @('push',$defaults,"$remote/frame-defaults.cfg") | Out-Host }
+        }
         Invoke-QvvrAdb @('shell',"sh '$remote/manage.sh' '$Action' '$RemoteGameDir' '$remote' '$remove'") | Out-Host
         if ($Action -eq 'Install') {
             if ($SkipLaunchOptions) { Write-Host "Steam launch options skipped. Required: $script:QvvrRequiredLaunchOptions" }

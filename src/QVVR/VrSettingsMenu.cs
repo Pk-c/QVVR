@@ -11,8 +11,8 @@ namespace QVVR
     {
         private enum Item
         {
-            ViewTilt, RenderProfile, Recenter, RestoreDefaults, CylindricalDiorama, Radius, Height, CenterHeight,
-            VoidColor, Passthrough, EdgeFade, Clouds, PlaceInFront, Size, XrCap, Count
+            ViewTilt, RenderScale, Msaa, Recenter, RestoreDefaults, CylindricalDiorama, Radius, Height, CenterHeight,
+            VoidColor, Passthrough, EdgeFade, Clouds, PlaceInFront, Size, Count
         }
         private Plugin plugin;
         private OpenVrRenderer renderer;
@@ -66,7 +66,7 @@ namespace QVVR
                 for (int index = 0; index < rows.Length; index++)
                     rows[index] = CreateText("Row" + index, font, layer, 290f - index * 40f, 32);
                 Text footer = CreateText("Help", font, layer, -382f, 25);
-                footer.text = "Up/down: select   Left/right: adjust\nA: action   B or both sticks: close and save\nDiorama: both grips; full VR: right stick camera\nRender profile: next launch; game not paused";
+                footer.text = "Up/down: select   Left/right: adjust\nA: action   B or both sticks: close and save\nDiorama: both grips; full VR: right stick camera\nRender scale and MSAA: next launch; game not paused";
                 RefreshText();
                 root.SetActive(false);
                 Plugin.Log.LogInfo("QVVR world-anchored settings menu ready: click both sticks to toggle.");
@@ -175,7 +175,16 @@ namespace QVVR
             switch ((Item)selected)
             {
                 case Item.ViewTilt: plugin.ViewPitchDegrees.Value = ComfortMath.ClampPitch(plugin.ViewPitchDegrees.Value + sign * 2f); anchorNeeded = true; break;
-                case Item.RenderProfile: plugin.SelectQualityPreset(plugin.QualityPreset.Value + (sign > 0f ? 1 : -1)); break;
+                case Item.RenderScale:
+                {
+                    // Steps the scale actually rendered. The OpenXR stability cap
+                    // follows it, so the chosen value is never silently capped.
+                    float scale = RenderBudget.NextRenderScale(EffectiveRenderScale(), sign);
+                    plugin.EyeTextureResolutionScale.Value = scale;
+                    if (plugin.XrResolutionCap.Value > 0f) plugin.XrResolutionCap.Value = scale;
+                    break;
+                }
+                case Item.Msaa: plugin.EyeMsaaSamples.Value = RenderBudget.NextMsaa(plugin.EyeMsaaSamples.Value, sign); break;
                 case Item.CylindricalDiorama: plugin.DioramaEnabled.Value = !plugin.DioramaEnabled.Value; anchorNeeded = true; break;
                 case Item.Radius: plugin.DioramaRadius.Value = Mathf.Clamp(plugin.DioramaRadius.Value + sign, 0.5f, 200f); break;
                 case Item.Height: plugin.DioramaHeight.Value = Mathf.Clamp(plugin.DioramaHeight.Value + sign, 0.5f, 200f); break;
@@ -186,7 +195,6 @@ namespace QVVR
                 case Item.Clouds: plugin.HideDecorativeClouds.Value = !plugin.HideDecorativeClouds.Value; break;
                 case Item.PlaceInFront: renderer.PlaceInFront(); anchorNeeded = true; break;
                 case Item.Size: plugin.DioramaWorldScale.Value = DioramaScaleState.Clamp(plugin.DioramaWorldScale.Value * (sign > 0f ? 1.25f : 0.8f)); break;
-                case Item.XrCap: plugin.XrResolutionCap.Value = RenderBudget.NextXrCap(plugin.XrResolutionCap.Value, sign); break;
             }
         }
 
@@ -211,8 +219,13 @@ namespace QVVR
             Reset(plugin.DioramaEnabled);
             Reset(plugin.BlackCutSurfaces);
             Reset(plugin.StereoSelectionMenus);
-            renderer.SetCylinderProbe(0);
             anchorNeeded = true;
+        }
+
+        // Exclusive OpenXR (passthrough path) applies the stability cap.
+        private float EffectiveRenderScale()
+        {
+            return RenderBudget.SceneScale(plugin.EyeTextureResolutionScale.Value, plugin.PassthroughEnabled.Value, plugin.XrResolutionCap.Value);
         }
 
         // Use the same shipped defaults as Config.Bind, including config-only
@@ -223,7 +236,9 @@ namespace QVVR
         private void RefreshText()
         {
             rows[(int)Item.ViewTilt].text = "View tilt: " + Format(plugin.ViewPitchDegrees.Value) + " deg (+ = downward)";
-            rows[(int)Item.RenderProfile].text = "Render profile: " + (plugin.QualityPreset.Value == 0 ? "Performance" : plugin.QualityPreset.Value == 2 ? "Sharp" : "Balanced");
+            rows[(int)Item.RenderScale].text = "Render scale: " + Format(EffectiveRenderScale()) + " (restart)";
+            int samples = RenderBudget.MsaaSamples(plugin.EyeMsaaSamples.Value);
+            rows[(int)Item.Msaa].text = "Anti-aliasing (MSAA): " + (samples > 1 ? samples + "x" : "Off") + " (restart)";
             rows[(int)Item.Recenter].text = "Recenter view (A)";
             rows[(int)Item.RestoreDefaults].text = "Restore comfort defaults (A)";
             rows[(int)Item.CylindricalDiorama].text = "Cylindrical diorama: " + (plugin.DioramaEnabled.Value ? "On" : "Off - full-scale VR");
@@ -236,7 +251,6 @@ namespace QVVR
             rows[(int)Item.Clouds].text = "Decorative clouds: " + (plugin.HideDecorativeClouds.Value ? "Hidden" : "Visible");
             rows[(int)Item.PlaceInFront].text = plugin.DioramaEnabled.Value ? "Place diorama in front of me (A)" : "Reset camera behind Q (A)";
             rows[(int)Item.Size].text = "Diorama size: " + plugin.DioramaWorldScale.Value.ToString("0.000", CultureInfo.InvariantCulture) + " x";
-            rows[(int)Item.XrCap].text = "XR eye scale cap: " + (plugin.XrResolutionCap.Value <= 0f ? "Off" : Format(plugin.XrResolutionCap.Value)) + " (restart)";
             for (int index = 0; index < rows.Length; index++)
                 rows[index].color = index == selected ? new Color(0.4f, 0.9f, 1f) : Color.white;
         }

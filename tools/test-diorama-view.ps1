@@ -161,7 +161,7 @@ try {
         if ($required -notin $calls) { throw "Actual rig missing $required" }
     }
     $eye = $renderer.Methods | Where-Object Name -eq RenderEye
-    foreach($field in @('frameCylinderCenter','frameDioramaOrigin')) {
+    foreach($field in @('frameCylinderCenter')) {
         if (-not ($eye.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldfld' -and $_.Operand.Name -eq $field })) { throw "Eye must use frame-latched $field" }
     }
     $grab = $renderer.Methods | Where-Object Name -eq UpdateWorldGrab

@@ -43,7 +43,7 @@ try {
         }
         $modules.Add($module)
     }
-    foreach ($export in @('QVVR_GetRenderEventFunc', 'QVVR_InstallShaderClip', 'QVVR_ConfigureOpenXr', 'QVVR_InitializeExclusiveOpenXr', 'QVVR_PrepareOpenXrFrame', 'QVVR_CancelOpenXrFrame', 'QVVR_GetClipBindingStats', 'QVVR_WriteClipDiagnostic', 'QVVR_SetCylinderCapOptions', 'QVVR_RegisterCapMesh', 'QVVR_ClearCapMeshes', 'QVVR_GetCapStats')) {
+    foreach ($export in @('QVVR_GetRenderEventFunc', 'QVVR_InstallShaderClip', 'QVVR_ConfigureOpenXr', 'QVVR_InitializeExclusiveOpenXr', 'QVVR_PrepareOpenXrFrame', 'QVVR_CancelOpenXrFrame', 'QVVR_GetClipBindingStats', 'QVVR_SetCylinderCapOptions', 'QVVR_RegisterCapMesh', 'QVVR_ClearCapMeshes', 'QVVR_GetCapStats')) {
         if ([QVVRNativeLoadTest]::GetProcAddress($modules[2], $export) -eq [IntPtr]::Zero) {
             throw "Missing native bridge export: $export"
         }
@@ -54,7 +54,7 @@ try {
     if ([QVVRNativeLoadTest]::GetProcAddress($modules[2], 'QVVR_SetRenderPoseAndMode') -eq [IntPtr]::Zero) {
         throw 'Missing frame-latched opaque selection mode export.'
     }
-    foreach ($export in @('QVVR_RegisterCapMeshBounds','QVVR_SetCapCullVolume','QVVR_SetCapSkipMeshes','QVVR_SetDetailedGpuTiming','QVVR_GetGpuPhaseTime','QVVR_GetCapCullStats','QVVR_ReadXrPacing','QVVR_ConfigureDiagnostics')) {
+    foreach ($export in @('QVVR_RegisterCapMeshBounds','QVVR_SetCapCullVolume','QVVR_SetCapSkipMeshes','QVVR_SetDetailedGpuTiming','QVVR_GetGpuPhaseTime','QVVR_GetCapCullStats','QVVR_ReadXrPacing')) {
         if ([QVVRNativeLoadTest]::GetProcAddress($modules[2], $export) -eq [IntPtr]::Zero) { throw "Missing performance export: $export" }
     }
     $bootstrapSource = Get-Content -LiteralPath (Join-Path $root 'src\QVVR\OpenVrManager.cs') -Raw

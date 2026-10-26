@@ -29,6 +29,8 @@ Steam Frame (from a Windows PC over USB)
    Setting launch options needs Steam running and CEF Remote Debugging enabled
    in the Frame developer settings; otherwise the tool tells you how to set
    them manually. Existing options are kept and completed, not replaced.
+   A first Frame install starts from SteamFrame/QVVR-Frame-Defaults.cfg (the
+   Steam Frame reference profile); an existing Frame config is kept.
 See SteamFrame/QVVR-Frame-Setup.txt for details, backups and recovery.
 
 Nothing here starts or terminates QV. See PC/README.txt and

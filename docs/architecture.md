@@ -521,15 +521,12 @@ adaptive capture, the session circuit breaker and the legacy rollback path relea
 subscriptions. Dialogue discovery, layer isolation and HUD inset maintenance
 continue on the existing schedule; they are not contingent on cache success.
 
-Normal builds retain basic nonblocking GPU/cadence observations but emit concise
-summaries every 30 seconds. `DiagnosticsEnabled` is latched at startup. Off skips
-per-eye determinant/pivot validation, idle placement stability sampling, automatic
-constant-buffer capture, diagnostic staging buffers and retained shader bytecodes.
-The shader patch variants, alpha/depth corrections, caps and their synchronization
-are unchanged. The new native startup configuration is resolved from the loaded
-module before shader interception, avoiding an eager Mono P/Invoke failure.
-Developer diagnostics re-enable verbose five-second logs and one-shot dumps;
-detailed GPU phases alone use five-second logs without enabling shader dumps.
+Release builds carry no investigation-only instrumentation: no shader or
+constant-buffer capture, no staging buffers, no per-draw timers and no periodic
+log lines. `DiagnosticsEnabled` (latched at startup) enables five-second
+measurement logs: XR cadence, main-thread/enqueue CPU, delayed GPU frame time,
+cylinder coverage and cut-surface/HUD layer state. `DetailedGpuTimings` adds the
+nonblocking per-phase GPU timestamps. Neither changes the rendered image.
 
 Maintenance elapsed time is sampled BEFORE log formatting/I/O. The previous log
 batch duration is reported separately and no longer leaks into the following

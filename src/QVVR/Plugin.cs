@@ -6,6 +6,8 @@ using UnityEngine;
 
 namespace QVVR
 {
+    internal enum CutSurfaceMode { Auto, Exact, BackFace }
+
     [BepInPlugin(Guid, Name, Version)]
     public sealed class Plugin : BaseUnityPlugin
     {
@@ -20,6 +22,8 @@ namespace QVVR
         internal ConfigEntry<float> IntroHubDistanceScale;
         internal ConfigEntry<float> EyeTextureResolutionScale;
         internal ConfigEntry<bool> FlipEyeTextureY;
+        internal ConfigEntry<bool> CompositorHudLayer;
+        internal ConfigEntry<bool> HideHudParticles;
         internal ConfigEntry<bool> VrControllerInput;
         internal ControllerInputConfiguration InputControls;
         internal ConfigEntry<bool> TwoGripWorldGrab;
@@ -51,7 +55,8 @@ namespace QVVR
         internal ConfigEntry<float> DioramaCenterHeight;
         internal ConfigEntry<float> DioramaFeatherWidth;
         internal ConfigEntry<bool> HideDecorativeClouds;
-        internal ConfigEntry<bool> LiquidDepthFix, BlackCutSurfaces;
+        internal ConfigEntry<bool> LiquidDepthFix, BlackCutSurfaces, InlineCutSurfaces;
+        internal ConfigEntry<CutSurfaceMode> CutSurfaceMode;
         internal ConfigEntry<bool> DioramaFollowPlayer;
         internal ConfigEntry<bool> DioramaFollowCamera;
         internal ConfigEntry<bool> PassthroughEnabled;
@@ -165,6 +170,10 @@ namespace QVVR
             qualityRevision = Config.Bind("VR", "QualityRevision", 0, "One-time migration of the old shipped 0.8 eye scale.");
             FlipEyeTextureY = Config.Bind("VR", "FlipEyeTextureY", true,
                 "Invert the submitted eye texture V bounds for Unity D3D11 render targets.");
+            HideHudParticles = Config.Bind("VR", "HideHudParticles", true,
+                "OpenXR (Steam Frame) only: hide QV's looping HUD sparkle particles (fairy acquire/clear effects) so the HUD can be cached instead of re-rendered every frame. Icons, counters and glows stay. Restored when VR stops. Live switch. OpenVR is unchanged.");
+            CompositorHudLayer = Config.Bind("VR", "CompositorHudLayer", true,
+                "OpenXR (Steam Frame) only: submit the captured HUD as a compositor quad layer sampled at display resolution, for sharper text, instead of drawing it into the eye images. Falls back to the eye images while the settings menu or a screen fade is shown, or if the runtime refuses the layer. OpenVR is unchanged. Restart required.");
             VrControllerInput = Config.Bind("Controls", "VrControllerInput", true,
                 "Bridge OpenVR controller sticks and buttons into QV's Rewired actions.");
             InputControls = new ControllerInputConfiguration(Config);
@@ -229,8 +238,12 @@ namespace QVVR
                 "Generate a fresh depth texture for each gameplay eye when a known depth-dependent liquid is active. Fixes stale/missing water/ink depth without faking camera position; adds an opaque depth pass. Live setting.");
             WaterFoamFix = Config.Bind("Diorama", "WaterFoamFix", true,
                 "Experimental VR-only blue WaterBlockMat compatibility: suppress its depth/view-dependent white foam while preserving original water/depth colors, geometry and alpha. Restores the live original material after stereo rendering; ink, fog, movies and desktop are untouched. False restores foam for A/B testing. No extra render pass.");
+            InlineCutSurfaces = Config.Bind("Performance", "InlineCutSurfaces", true,
+                "Draw black cut surfaces in the eye's own depth-stencil without switching render targets (much cheaper on tiled GPUs such as Steam Frame). Falls back automatically when the eye depth has no stencil or the game uses stencil. Opaque materials only; cutout (alpha-tested) cuts stay open. False restores the previous private-target method. Live switch.");
             BlackCutSurfaces = Config.Bind("Diorama", "BlackCutSurfaces", true,
                 "Experimental GPU stencil caps: close clipped opaque solids in black, leaving empty space transparent. Enabled by the reference Frame profile; adds geometry work. Open/non-manifold meshes may not cap correctly. Config-only live setting; false disables.");
+            CutSurfaceMode = Config.Bind("Diorama", "CutSurfaceMode", QVVR.CutSurfaceMode.Auto,
+                "How BlackCutSurfaces closes cut solids. Auto: BackFace on the OpenXR/Steam Frame path, Exact on OpenVR/PC. Exact: black exactly on the cylinder wall (replays cut meshes; heavier on Steam Frame). BackFace: paints the visible inside of cut solids black while they draw, without replays (much cheaper; objects inside a cut solid stay visible and open meshes can show black backs). Falls back to Exact when the game uses stencil. Live switch.");
             DioramaFollowCamera = Config.Bind("Diorama", "FollowCamera", true,
                 "Move the cylinder with the original game camera, preserving its initial player-centered offset. Does not follow HMD motion or manual grip translation. Takes priority over FollowPlayer.");
             DioramaFollowPlayer = Config.Bind("Diorama", "FollowPlayer", false,
@@ -258,7 +271,7 @@ namespace QVVR
             LightweightUiMaintenance = Config.Bind("Performance", "LightweightUiMaintenance", true,
                 "Retain unchanged UI dirty subscriptions across scans. For continuously animated/unknown UI, use normal full-rate capture without snapshot tracking and retry caching every 2 seconds. False restores full cache rebuilds for A/B testing.");
             DiagnosticsEnabled = Config.Bind("Performance", "DiagnosticsEnabled", false,
-                "Developer diagnostics: verbose 5-second logs, per-eye cylinder validation math and one-shot GPU constant-buffer/shader capture. False uses concise 30-second performance summaries without shader dumps. Requires manual relaunch.");
+                "Developer measurements: 5-second logs of XR cadence, CPU/GPU frame times, cylinder coverage, cut-surface and HUD layer state. False (release) writes no periodic log lines. Requires manual relaunch.");
             DirectHudOverlay = Config.Bind("Performance", "DirectHudOverlay", true,
                 "Draw the ordinary captured HUD quad at the end of each world camera instead of rendering another camera. Settings canvas and flat scenes keep the validated camera path. Live A/B switch.");
             DetailedGpuTimings = Config.Bind("Performance", "DetailedGpuTimings", false,

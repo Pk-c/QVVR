@@ -338,8 +338,10 @@ still applies on automatic entry, including tilted cylinders.
 
 For missed-frame judder, `VR.XrResolutionCap=1` caps exclusive OpenXR eye
 supersampling at the runtime's recommended size on the next manual launch.
-The requested profile is preserved; **XR eye scale cap** in settings can raise
-the cap or disable it (0). OpenVR is unchanged. Capping Sharp 1.15 at 1.0 draws
+The VR settings menu exposes **Render scale** (0.5-1.5 in 0.05 steps, showing the
+scale actually rendered; it moves the OpenXR cap with it) and **Anti-aliasing
+(MSAA)** Off/2x/4x; both apply on the next manual launch. `XrResolutionCap=0`
+in the config disables the cap. OpenVR ignores the cap. Capping Sharp 1.15 at 1.0 draws
 about 24.4% fewer eye pixels; it does not imply an equal GPU-time reduction.
 HUD capture stays at its existing resolution, but final eye sampling follows
 the capped eye target. Head tracking is never smoothed or delayed. Physical
@@ -357,6 +359,17 @@ Only untouched, unsaved old default offsets migrate to the new default; saved
 or customized layouts are never overwritten.
 
 ## Quality and performance
+
+**HUD compositor layer (Steam Frame / OpenXR):** `VR.CompositorHudLayer=true`
+submits the captured HUD as an OpenXR quad layer. The GPU resamples the mipmapped
+3360x1890 capture trilinearly into a single-level 2048-wide swapchain, close to
+display density, which the runtime samples once instead of through the eye images
+(1728x1728 on Frame), so HUD and dialogue text stay sharp. Mipmapped swapchains
+are avoided: Proton's D3D11 interop showed stale/corrupt lower levels on Frame.
+Additive HUD effects stay additive light. The quad is recopied only when the HUD
+content changes. The settings menu and screen fades
+temporarily return to the in-eye HUD; a runtime refusal falls back permanently
+for the session. OpenVR/PC rendering is unchanged. Restart after changing it.
 
 Profiles: **Performance** (0.85 eye resolution), **Balanced** (1.0), and
 **Sharp** (1.15), relative to the runtime recommendation. All default to 2x MSAA;
@@ -402,8 +415,14 @@ fallback backgrounds on the Frame before claiming performance/correctness.
 **Black cut surfaces (experimental)** enables GPU stencil cross-sections of
 registered opaque mesh geometry, without a solid black cylinder hiding the scene.
 It is enabled in the reference Frame profile (`Diorama.BlackCutSurfaces=false`
-disables it through the config file). It costs an
-extra geometry pass and private GPU depth/stencil targets when enabled.
+disables it through the config file). `Diorama.CutSurfaceMode` picks the method:
+`Auto` (default) uses `BackFace` on the OpenXR/Steam Frame path and `Exact` on
+OpenVR/PC. `Exact` replays cut meshes and places black exactly on the cylinder
+wall. `BackFace` marks the faces solids normally cull in the eye stencil while
+they draw, then paints them black in one stencil-tested pass: no replay, about
+2 ms instead of about 6 ms GPU on the heavy Frame level, but objects inside a cut
+solid stay visible and a solid whose far side is also cut away can stay open.
+Both fall back to the private exact method when the game uses stencil.
 Open/non-manifold meshes, camera-inside-solid views, dynamic geometry and batching
 can limit coverage; this is not a general-purpose watertight mesh repair.
 
@@ -425,11 +444,11 @@ capture temporarily drops snapshot/subscription tracking and retries caching eve
 two seconds; capture rate, mipmaps and text resolution stay unchanged. Set false
 for the previous full-tracking A/B path.
 
-Normal operation writes concise performance summaries every 30 seconds, without
-automatic shader/constant-buffer dumps or per-eye validation-only math.
-`Performance.DiagnosticsEnabled=true` restores developer diagnostics and five-second
-verbose logs on the next manual launch. `DetailedGpuTimings=true` also uses
-five-second verbose timing logs but does not enable shader dumps by itself.
+Release configs write no periodic log lines (startup state, warnings and errors
+only). `Performance.DiagnosticsEnabled=true` enables five-second measurement logs
+on the next manual launch: XR submission cadence, main-thread and enqueue CPU,
+delayed GPU frame time, cylinder coverage, cut-surface and HUD layer state.
+`DetailedGpuTimings=true` adds per-phase GPU timestamps (UI, eyes, depth, copy).
 Maintenance and logging wall-clock durations are reported separately. Event hooks
 still handle menu/cinema transitions immediately; idle recovery polling is once
 per second and active fixed-panel cinema recovery remains at 0.1 seconds.

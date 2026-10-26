@@ -21,7 +21,7 @@ namespace QVVR
             Type type = graphic.GetType();
             if (type.Assembly.GetName().Name != "Unity.TextMeshPro") return;
             string property;
-            if (type.FullName == "TMPro.TextMeshProUGUI") property = "fontSharedMaterial";
+            if (type.FullName == "TMPro.TextMeshProUGUI" || type.FullName == "TMPro.TextMeshPro") property = "fontSharedMaterial";
             else if (type.FullName == "TMPro.TMP_SubMeshUI") property = "sharedMaterial";
             else return;
             PropertyInfo info = type.GetProperty(property, BindingFlags.Public | BindingFlags.Instance);
@@ -41,12 +41,26 @@ namespace QVVR
             if (material == null || shader == null) return;
             string name = shader.name; // Shader.name allocates; never read it in the hot path.
             scrolling = name == "TextMeshPro/Distance Field";
-            supported = scrolling || name == "TextMeshPro/Mobile/Distance Field";
+            supported = scrolling || StaticShader(name);
+        }
+
+        // TMP shaders without time-driven UV scrolling. QV's HUD text uses
+        // Bitmap and its inline icons Sprite; text edits still dirty the cache.
+        private static bool StaticShader(string name)
+        {
+            return name == "TextMeshPro/Mobile/Distance Field" || name == "TextMeshPro/Bitmap" ||
+                name == "TextMeshPro/Mobile/Bitmap" || name == "TextMeshPro/Bitmap Custom Atlas" ||
+                name == "TextMeshPro/Sprite";
         }
 
         internal bool Continuous()
         {
-            if (!supported || shared() != material || material == null || material.shader != shader) return true;
+            if (shared == null) return true;
+            Material current = shared();
+            // No material draws nothing (e.g. an unused TMP submesh); assigning
+            // one raises TMP's dirty-material callback, which invalidates capture.
+            if (current == null) return material != null;
+            if (!supported || current != material || material.shader != shader) return true;
             // Full TMP SDF has time-driven texture scrolling. Mobile SDF does not.
             // Unknown shaders/material replacements fail open until the next scan.
             return scrolling && (material.GetFloat(FaceX) != 0f || material.GetFloat(FaceY) != 0f ||

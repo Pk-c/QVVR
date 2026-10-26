@@ -28,7 +28,9 @@ foam during gameplay stereo only, retaining its surface/depth colors and restori
 the live material afterward. Ink/fog/desktop are unchanged. Set false for A/B.
 No extra render pass or texture; the visual result needs Frame validation.
 Black cut surfaces (experimental) is enabled in the reference Frame profile.
-Set Diorama.BlackCutSurfaces=false in the config to disable it. Open meshes
+Set Diorama.BlackCutSurfaces=false in the config to disable it.
+Diorama.CutSurfaceMode=Auto uses the cheaper BackFace method on Steam Frame
+and the Exact method on PC; set Exact or BackFace to force one. Open meshes
 and incomplete native batch registration can limit coverage; extra GPU work.
 
 Copy the CONTENTS of the release PC folder beside QV.exe. Close QV before deployment;
@@ -81,8 +83,8 @@ Controls:
   retain their timing; applies at the next entry, not to an active transition.
   Performance.LightweightUiMaintenance=true avoids repeated HUD subscriptions;
   continuous UI keeps full capture rate with a cache recovery probe every 2 s.
-  Performance.DiagnosticsEnabled=false uses concise 30 s performance summaries
-  without shader dumps. True restores developer diagnostics after manual restart.
+  Performance.DiagnosticsEnabled=false writes no periodic logs. True adds
+  5-second cadence/CPU/GPU measurement lines after a manual restart.
   Both stick clicks: open/close QVVR settings.
   Layout=TrackpadWands: right trigger primary/confirm, right application-menu
   secondary/back, left application-menu pause, left pad click swap, left trigger
@@ -165,7 +167,9 @@ Quality:
   Rollback: VR.UiTextureScale=1.5, keep UiQualityRevision=1, manually restart.
   Realtime shadows are disabled in VR and restored in desktop fallback.
   Target: 72 Hz (13.89 ms), requiring actual device CPU/GPU measurements.
-  XR eye scale cap: default 1.0, adjustable/off (0) in settings; manual restart.
+  Settings menu: Render scale (0.5-1.5) and Anti-aliasing (MSAA Off/2x/4x);
+  both apply on the next manual launch. XR eye scale cap: default 1.0 (0 = off
+  in the config); the Render scale row moves it with the chosen scale.
   Caps Sharp supersampling to reduce missed-frame judder, preserving the chosen
   profile, OpenVR and HUD capture size (final eye sampling follows the cap).
   Exact absolute runtime eye poses avoid redundant head/calibration round-trips;
@@ -176,9 +180,7 @@ Quality:
 
 Diagnostics:
   Runtime log: BepInEx/LogOutput.log.
-  Cylinder probe 0: Normal; 1: Unclipped passes; 2: Unlimited; 3: Neutral matrix.
-  Probe choices are temporary. Diagnostic shader/constant dumps are not eye images.
-  Logs and dumps may contain private paths or proprietary game data.
+  Logs may contain private paths; review them before sharing.
   Do not publish raw diagnostics, saved configurations or game assets.
 
 Uninstall:

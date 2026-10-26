@@ -35,7 +35,49 @@ namespace QVVR {
             Assert(Near((p.m22*(-0.1f)+p.m23)/0.1f,-1f), "Unity near plane depth -1");
             Assert(Near((p.m22*(-100f)+p.m23)/100f,1f), "Unity far plane depth +1");
             Assert(Near(p.m32,-1f) && Near(p.m33,0f), "Perspective divide must use RH negative Z");
+            HudLayerChecks();
             return checks;
+        }
+        // Managed-only math: Unity's native Quaternion/Matrix entry points are unavailable here.
+        private static UnityEngine.Quaternion Yaw(float degrees) {
+            float half = degrees * 0.5f * (float)System.Math.PI / 180f;
+            return new UnityEngine.Quaternion(0f, (float)System.Math.Sin(half), 0f, (float)System.Math.Cos(half));
+        }
+        private static UnityEngine.Quaternion Conj(UnityEngine.Quaternion q) { return new UnityEngine.Quaternion(-q.x, -q.y, -q.z, q.w); }
+        private static UnityEngine.Matrix4x4 Pose(UnityEngine.Vector3 t, UnityEngine.Quaternion q) {
+            UnityEngine.Matrix4x4 m = new UnityEngine.Matrix4x4();
+            UnityEngine.Vector3 x = q * UnityEngine.Vector3.right, y = q * UnityEngine.Vector3.up, z = q * UnityEngine.Vector3.forward;
+            m.SetColumn(0, new UnityEngine.Vector4(x.x, x.y, x.z, 0f)); m.SetColumn(1, new UnityEngine.Vector4(y.x, y.y, y.z, 0f));
+            m.SetColumn(2, new UnityEngine.Vector4(z.x, z.y, z.z, 0f)); m.SetColumn(3, new UnityEngine.Vector4(t.x, t.y, t.z, 1f));
+            return m;
+        }
+        private static void HudLayerChecks() {
+            Assert(System.Runtime.InteropServices.Marshal.SizeOf(typeof(OpenXrHudLayer))==44, "HUD layer ABI");
+            // Panel straight ahead in Unity tracking space (+Z forward) must be in
+            // front in OpenXR (-Z) with identity orientation, i.e. facing the viewer.
+            OpenXrHudLayer layer = new OpenXrHudLayer();
+            UnityEngine.Matrix4x4 identity = Pose(UnityEngine.Vector3.zero, UnityEngine.Quaternion.identity);
+            layer.SetFromWorld(new UnityEngine.Vector3(0f, 1.5f, 1.4f), UnityEngine.Quaternion.identity, new UnityEngine.Vector3(3.24f, 1.82f, 1f),
+                UnityEngine.Vector3.zero, UnityEngine.Quaternion.identity, 1f, identity, UnityEngine.Quaternion.identity, 5u);
+            Assert(layer.Visible==1 && layer.Version==5 && Near(layer.PositionY,1.5f) && Near(layer.PositionZ,-1.4f), "HUD ahead maps to OpenXR -Z");
+            Assert(Near(layer.RotationW,1f) && Near(layer.Width,3.24f) && Near(layer.Height,1.82f), "HUD identity facing and size");
+            // Round trip through the eye rig mapping with recenter, rig yaw and world scale.
+            UnityEngine.Vector3 calibrationPosition = new UnityEngine.Vector3(0.3f, 1.6f, -0.2f);
+            UnityEngine.Quaternion calibrationRotation = Yaw(35f), rigRotation = Yaw(-120f), trackingRotation = Yaw(20f);
+            UnityEngine.Vector3 rigPosition = new UnityEngine.Vector3(12f, 4f, -7f), tracking = new UnityEngine.Vector3(0.6f, 1.4f, 1.1f);
+            float units = 0.05f;
+            UnityEngine.Vector3 world = rigPosition + rigRotation * (Conj(calibrationRotation) * (tracking - calibrationPosition)) * units;
+            UnityEngine.Quaternion worldRotation = rigRotation * Conj(calibrationRotation) * trackingRotation;
+            layer.SetFromWorld(world, worldRotation, new UnityEngine.Vector3(0.09f, 0.05f, 1f), rigPosition, rigRotation, units,
+                Pose(calibrationPosition, calibrationRotation), calibrationRotation, 6u);
+            Assert(layer.Visible==1 && Near(layer.PositionX,tracking.x) && Near(layer.PositionY,tracking.y) && Near(layer.PositionZ,-tracking.z), "HUD position inverts the rig mapping");
+            Assert(Near(layer.RotationX,-trackingRotation.x) && Near(layer.RotationY,-trackingRotation.y) &&
+                Near(layer.RotationZ,trackingRotation.z) && Near(layer.RotationW,trackingRotation.w), "HUD rotation mirrors Unity LH to OpenXR RH");
+            Assert(Near(layer.Width,1.8f) && Near(layer.Height,1f), "World units convert back to meters");
+            layer.SetFromWorld(world, worldRotation, UnityEngine.Vector3.one, rigPosition, rigRotation, 0f, identity, UnityEngine.Quaternion.identity, 7u);
+            Assert(layer.Visible==0, "Invalid world scale never submits a quad");
+            layer.SetFromWorld(new UnityEngine.Vector3(float.NaN, 0f, 0f), worldRotation, UnityEngine.Vector3.one, rigPosition, rigRotation, 1f, identity, UnityEngine.Quaternion.identity, 8u);
+            Assert(layer.Visible==0, "Non-finite pose never submits a quad");
         }
     }
 }

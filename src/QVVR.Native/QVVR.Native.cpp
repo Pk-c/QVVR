@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <d3d11.h>
+#include <mutex>
 
 namespace
 {
@@ -16,21 +17,26 @@ int activeSlot = -1;
 
 std::atomic<void *> leftTexture(nullptr);
 std::atomic<void *> rightTexture(nullptr);
+std::atomic<void *> hudTexture(nullptr);
 std::mutex textureMutex;
 std::atomic<bool> shutdownComplete(true);
 struct TextureFrameRefs
 {
     ID3D11Texture2D *left = nullptr;
     ID3D11Texture2D *right = nullptr;
+    ID3D11Texture2D *hud = nullptr;
     TextureFrameRefs()
     {
         std::lock_guard<std::mutex> lock(textureMutex);
         left = static_cast<ID3D11Texture2D *>(leftTexture.load());
         right = static_cast<ID3D11Texture2D *>(rightTexture.load());
+        hud = static_cast<ID3D11Texture2D *>(hudTexture.load());
         if (left)
             left->AddRef();
         if (right)
             right->AddRef();
+        if (hud)
+            hud->AddRef();
     }
     ~TextureFrameRefs()
     {
@@ -38,8 +44,13 @@ struct TextureFrameRefs
             left->Release();
         if (right)
             right->Release();
+        if (hud)
+            hud->Release();
     }
 };
+// HUD quad parameters travel with the pose slot, like clip parameters.
+qvvr::HudLayer hudSlots[qvvr::PoseSlotCount] = {};
+std::mutex hudMutex;
 std::atomic<bool> flipEyeTextureY(true);
 std::atomic<std::uint64_t> submittedFrames(0);
 std::atomic<int> leftSubmitResult(CompositorUnavailable);
@@ -166,9 +177,14 @@ void __stdcall OnRenderEvent(int eventId)
     if (usingXrFrame)
     {
         gpuTiming.Mark(10);
+        qvvr::HudLayer hud;
+        {
+            std::lock_guard<std::mutex> lock(hudMutex);
+            hud = hudSlots[slot];
+        }
         bool result =
             qvvr::SubmitOpenXrFrame(static_cast<ID3D11Texture2D *>(left), static_cast<ID3D11Texture2D *>(right),
-                                    activeRenderPose, flipEyeTextureY.load(), activeOpaqueScene);
+                                    activeRenderPose, flipEyeTextureY.load(), activeOpaqueScene, textures.hud, &hud);
         gpuTiming.Mark(11);
         gpuTiming.End();
         leftSubmitResult.store(result ? 0 : qvvr::OpenXrError());
@@ -246,9 +262,10 @@ extern "C"
     {
         return gpuTiming.Latest();
     }
-    __declspec(dllexport) void __cdecl QVVR_ConfigureDiagnostics(int enabled)
-    { qvvr::ConfigureShaderDiagnostics(enabled != 0); }
-    __declspec(dllexport) void __cdecl QVVR_SetDetailedGpuTiming(int enabled) { gpuTiming.ConfigureDetailed(enabled != 0); }
+    __declspec(dllexport) void __cdecl QVVR_SetDetailedGpuTiming(int enabled)
+    {
+        gpuTiming.ConfigureDetailed(enabled != 0);
+    }
     __declspec(dllexport) double __cdecl QVVR_GetGpuPhaseTime(int phase) { return gpuTiming.Phase(static_cast<unsigned>(phase)); }
     __declspec(dllexport) void __cdecl QVVR_ReadXrPacing(qvvr::FramePacingSnapshot *snapshot)
     { if (snapshot) *snapshot = qvvr::ReadOpenXrPacing(); }
@@ -262,10 +279,6 @@ extern "C"
         if (device)
             device->Release();
         return result ? 1 : 0;
-    }
-    __declspec(dllexport) int __cdecl QVVR_WriteClipDiagnostic(const wchar_t *path)
-    {
-        return qvvr::WriteShaderClipDiagnostic(path) ? 1 : 0;
     }
     __declspec(dllexport) void __cdecl QVVR_SetClipParameters(int slot, int eye, const qvvr::ClipParameters *parameters)
     {
@@ -313,6 +326,18 @@ extern "C"
         skip.count = buffers && count > 0 && count <= static_cast<int>(qvvr::CapSkipFrame::Capacity) ? static_cast<unsigned>(count) : 0;
         for (unsigned i = 0; i < skip.count; ++i) skip.buffers[i] = buffers[i];
     }
+    __declspec(dllexport) void __cdecl QVVR_SetCapInlineEnabled(int enabled)
+    {
+        qvvr::SetCapInlineEnabled(enabled != 0);
+    }
+    __declspec(dllexport) void __cdecl QVVR_GetCapModeStats(unsigned *inlineEyes, unsigned *privateEyes, int *stencilConflict)
+    {
+        unsigned i = 0, p = 0; bool conflict = false; qvvr::GetCapModeStats(i, p, conflict);
+        if (inlineEyes) *inlineEyes = i; if (privateEyes) *privateEyes = p; if (stencilConflict) *stencilConflict = conflict ? 1 : 0;
+    }
+    __declspec(dllexport) int __cdecl QVVR_GetCapInlineVariants() { return qvvr::GetCapInlineVariants(); }
+    __declspec(dllexport) void __cdecl QVVR_SetCapMode(int mode) { qvvr::SetCapMode(mode); }
+    __declspec(dllexport) unsigned __cdecl QVVR_GetCapBackFaceEyes() { return qvvr::GetCapBackFaceEyes(); }
     __declspec(dllexport) void __cdecl QVVR_GetCapCullStats(unsigned *bounded, unsigned *skipped)
     {
         unsigned b = 0, s = 0; qvvr::GetCapCullStats(b, s);
@@ -402,9 +427,30 @@ extern "C"
             static_cast<ID3D11Texture2D *>(oldRight)->Release();
     }
 
+    __declspec(dllexport) void __cdecl QVVR_SetHudTexture(void *texture)
+    {
+        if (texture)
+            static_cast<ID3D11Texture2D *>(texture)->AddRef();
+        std::lock_guard<std::mutex> lock(textureMutex);
+        void *old = hudTexture.exchange(texture);
+        if (old)
+            static_cast<ID3D11Texture2D *>(old)->Release();
+    }
+    __declspec(dllexport) void __cdecl QVVR_SetHudLayer(int slot, const qvvr::HudLayer *layer)
+    {
+        if (slot < 0 || slot >= qvvr::PoseSlotCount || !layer) return;
+        std::lock_guard<std::mutex> lock(hudMutex);
+        hudSlots[slot] = *layer;
+    }
+    __declspec(dllexport) int __cdecl QVVR_GetHudLayerStatus()
+    {
+        return qvvr::OpenXrHudStatus();
+    }
+
     __declspec(dllexport) void __cdecl QVVR_ClearEyeTextures()
     {
         QVVR_SetEyeTextures(nullptr, nullptr);
+        QVVR_SetHudTexture(nullptr);
         poseQueue.Clear();
     }
 

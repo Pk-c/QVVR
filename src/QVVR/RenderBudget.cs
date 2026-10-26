@@ -31,6 +31,20 @@ namespace QVVR
             float cap = float.IsNaN(xrCap) || float.IsInfinity(xrCap) ? 1f : Math.Max(0.5f, Math.Min(1.5f, xrCap));
             return Math.Min(scale, cap);
         }
+        // Settings menu: 0.05 steps of the effective eye scale, 0.5-1.5.
+        internal static float NextRenderScale(float value, float direction)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value)) value = 1f;
+            float next = (float)Math.Round((value + direction * 0.05f) * 20f) / 20f;
+            return Math.Max(0.5f, Math.Min(1.5f, next));
+        }
+        // Settings menu: 1 (off) / 2 / 4 samples, clamped at both ends.
+        internal static int NextMsaa(int value, float direction)
+        {
+            int current = MsaaSamples(value);
+            if (direction > 0f) return current >= 2 ? 4 : 2;
+            return current <= 2 ? 1 : 2;
+        }
         internal static float NextXrCap(float value, float direction)
         {
             if (float.IsNaN(value) || float.IsInfinity(value)) value = 1f;

@@ -45,7 +45,10 @@ namespace QVVR
                 for (int slot = 0; slot < materials.Length && solid; ++slot)
                 {
                     Material material = materials[slot];
-                    solid = material != null && material.shader != null && material.renderQueue <= 2500 &&
+                    // Opaque queue only (< AlphaTest 2450): the same-pass stencil
+                    // count cannot run a material's alpha test, so cutout cards
+                    // would otherwise cap their whole quad black.
+                    solid = material != null && material.shader != null && material.renderQueue < 2450 &&
                         !LiquidDepthPolicy.UsesDepth(material.shader.name);
                 }
                 if (solid) meshes.Add(filter.sharedMesh);

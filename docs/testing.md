@@ -123,6 +123,14 @@ These are sparse, partial-path samples, not whole-frame times or proof of steady
     blending; capture/composition alpha behavior needs a separate controlled
     investigation if supersampling alone does not resolve the glyph contours.
 
+11b. **HUD compositor layer (Frame):** with `VR.CompositorHudLayer=true`, check
+    dialogue/counter text sharpness against `false`, HUD placement and follow lag,
+    passthrough edges, the settings menu (in-eye HUD below it), screen fades and
+    scene changes. Diagnostics log `HUD compositor layer: status=1, active=True`.
+    Compare GPU HUD L/R (expected ~0 while active) and cadence at 72 Hz.
+    `tools/test-openxr-backend.ps1` covers the quad, mip copy, versioned reuse and
+    runtime refusal on a fake runtime only; legibility needs the headset.
+
 ## Performance
 
 12. **HUD layout inset:** test 0/12/25/36/45% and repeated menu changes. Corner controls
@@ -276,6 +284,10 @@ CullOutsideDiorama). `PostSubmitMaintenance` controls moving cold maintenance
 after stereo enqueue. Both default true and can be compared independently.
 Set a flag false in the config while QV is closed, then start QV manually for a
 controlled comparison. `BlackCutSurfaces` remains the separate cap-effect switch.
+`Diorama.CutSurfaceMode` (`Auto`, `Exact`, `BackFace`) chooses the cap method;
+the `black caps mode` log line shows the effective mode, the setting and the
+number of back-face eyes. Compare `Exact` and `BackFace` on the same level for
+cut-edge visuals and GPU total (reference heavy level: about 10 ms vs 6.6 ms).
 `DetailedGpuTimings=false` is the default; enable it before a manual launch to
 log delayed per-pass GPU samples every five seconds. Keep it identical in A/B
 comparisons. Preserve eye resolution, HUD resolution/cadence, cylinder size,
@@ -489,9 +501,9 @@ animated materials, pause/options, new widgets and scene changes; suspension mus
 retain full capture cadence, never freeze text/fades. Summaries report suspension
 and continuous reason alongside capture/reuse counts. Compare maintenance elapsed
 time, separately reported log batch time, cadence p95/maximum and GPU samples.
-Use `DiagnosticsEnabled=true` only when detailed diagnostics/dumps are needed
-(manual restart); basic summaries are 30 seconds by default. Detailed GPU timings
-still request five-second verbose timing output. Test menu/cinema event hooks,
+Enable `DiagnosticsEnabled=true` (manual restart) for Frame measurements; a
+release config writes no periodic logs. `DetailedGpuTimings=true` adds per-phase
+GPU timestamps to the same five-second output. Test menu/cinema event hooks,
 late injection, paused/skipped movies and delayed camera activation with the idle
 one-second recovery fallback. Preserve original game files and deploy-only policy.
 No performance gain is established until physical Frame A/B measurements pass.

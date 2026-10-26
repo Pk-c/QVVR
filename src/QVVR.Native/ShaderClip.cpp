@@ -471,6 +471,8 @@ using Draw = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, UINT);
 using DrawIndexed = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, UINT, INT);
 using DrawIndexedInstanced = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, UINT, UINT, INT, UINT);
 using DrawIndexedIndirect = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, ID3D11Buffer *, UINT);
+using SetRaster = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, ID3D11RasterizerState *);
+using SetDepth = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, ID3D11DepthStencilState *, UINT);
 using SetTargets = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, ID3D11RenderTargetView *const *,
                                              ID3D11DepthStencilView *);
 using SetTargetsUav = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, ID3D11RenderTargetView *const *,
@@ -504,13 +506,7 @@ std::unordered_map<ID3D11PixelShader *, Variant> variants;
 std::unordered_map<ID3D11BlendState *, ID3D11BlendState *> blends;
 std::mutex variantMutex;
 std::mutex blendMutex;
-struct DiagnosticBytecode { std::vector<std::uint8_t> original, clipped, opaque, premultiplied; };
-// Cold resource-creation cache, deliberately separate from the small Variant
-// copied in HookSet. Never copy a vector in the per-draw render path.
-std::unordered_map<ID3D11PixelShader *, DiagnosticBytecode> diagnosticShaders;
 ID3D11DeviceContext *context = nullptr;
-bool diagnosticEnabled = false;
-ID3D11DeviceContext1 *diagnosticContext = nullptr;
 ID3D11Buffer *clipBuffer = nullptr;
 ID3D11PixelShader *discardShader = nullptr;
 ID3D11PixelShader *depthClipShader = nullptr;
@@ -529,142 +525,147 @@ unsigned activeBuffer = 13;
 std::atomic<unsigned> patchedCount(0), rejectedCount(0), unknownCount(0);
 std::atomic<unsigned> depthOnlyCount(0);
 std::atomic<unsigned> materialBindCount(0), otherContextBindCount(0);
-// All memory and staging resources are reserved at installation. Capture a
-// single real world draw, not a frame loop; read only GPU constant buffers.
-constexpr unsigned DiagnosticSlots = 14, DiagnosticBytes = 65536;
-ID3D11Buffer *diagnosticStaging[DiagnosticSlots] = {};
-ID3D11Query *diagnosticQuery = nullptr;
-ID3D11Buffer *diagnosticPixelStaging = nullptr;
-struct ClipDiagnostic
+// Back-face cut surfaces (graphics thread, capMode 1). Opaque depth-writing
+// world draws zero the eye stencil on the faces they normally show; registered
+// solids that may reach the cut also draw the faces they normally cull and set
+// 1 there. The depth test keeps the nearest surface, so 1 means "looking into
+// a solid", which CylinderCaps paints black before transparent draws. Variants
+// are created once per game state object (cold); binding swaps pointers only.
+SetRaster originalRaster = nullptr;
+SetDepth originalDepth = nullptr;
+ID3D11Device *clipDevice = nullptr;
+struct RasterVariant { ID3D11RasterizerState *noCull = nullptr; D3D11_CULL_MODE cull = D3D11_CULL_BACK; };
+struct DepthVariant { ID3D11DepthStencilState *zero = nullptr, *facing[2] = {}; bool marks = false, stencil = false; };
+std::unordered_map<ID3D11RasterizerState *, RasterVariant> rasterVariants;
+std::unordered_map<ID3D11DepthStencilState *, DepthVariant> depthVariants;
+ID3D11RasterizerState *requestedRaster = nullptr;
+ID3D11DepthStencilState *requestedDepth = nullptr;
+UINT requestedStencilRef = 0;
+RasterVariant rasterVariant;
+DepthVariant depthVariant;
+ID3D11DepthStencilView *boundDepthView = nullptr; // Not owned: compared/cleared only while bound.
+bool boundDepthStencil = false;
+bool backFaceTracking = false; // Sampled per BeginShaderClip; exact mode never pays for it.
+int backFaceBinding = 0;       // 0 requested states, 1 stencil zero, 2 culled faces marked.
+template<class T> void Hold(T *&slot, T *value)
 {
-    unsigned magic = 0x51564344, version = 2;
-    ClipParameters parameters = {};
-    D3D11_VIEWPORT viewport = {};
-    unsigned sizes[DiagnosticSlots] = {};
-    unsigned firstConstants[DiagnosticSlots] = {};
-    unsigned char data[DiagnosticSlots][DiagnosticBytes] = {};
-} diagnostic;
-constexpr unsigned DiagnosticShaderBytes = 262144;
-struct PixelDiagnostic
-{
-    unsigned slot = 0, firstConstant = 0, bytes = 0, expectedBinding = 0;
-    ClipParameters gpuParameters = {};
-    unsigned originalSize = 0, clippedSize = 0;
-    unsigned char original[DiagnosticShaderBytes] = {}, clipped[DiagnosticShaderBytes] = {};
-} pixelDiagnostic;
-std::atomic<bool> diagnosticReady(false);
-bool diagnosticArmed = false, diagnosticPending = false, diagnosticCaptured = false;
-void RestoreDiagnosticDrawHooks();
-void CaptureWorldConstants(ID3D11DeviceContext *ctx)
-{
-    if (ctx != context || !clipping || !worldTarget || !diagnosticArmed || diagnosticCaptured || !requestedShader)
-        return;
-    ID3D11Buffer *buffers[DiagnosticSlots] = {};
-    unsigned constantCounts[DiagnosticSlots] = {};
-    if (diagnosticContext)
-        diagnosticContext->VSGetConstantBuffers1(0, DiagnosticSlots, buffers, diagnostic.firstConstants, constantCounts);
-    else ctx->VSGetConstantBuffers(0, DiagnosticSlots, buffers);
-    unsigned viewportCount = 1;
-    ctx->RSGetViewports(&viewportCount, &diagnostic.viewport);
-    for (unsigned i = 0; i < DiagnosticSlots; ++i)
-    {
-        if (!buffers[i]) continue;
-        D3D11_BUFFER_DESC desc = {};
-        buffers[i]->GetDesc(&desc);
-        unsigned offset = diagnostic.firstConstants[i] * 16;
-        if (offset < desc.ByteWidth)
-        {
-            unsigned size = desc.ByteWidth - offset;
-            if (size > DiagnosticBytes) size = DiagnosticBytes;
-            if (diagnosticContext && size > constantCounts[i] * 16) size = constantCounts[i] * 16;
-            diagnostic.sizes[i] = size;
-            D3D11_BOX box = {offset, 0, 0, offset + size, 1, 1};
-            ctx->CopySubresourceRegion(diagnosticStaging[i], 0, 0, 0, 0, buffers[i], 0, &box);
-        }
-        buffers[i]->Release();
-    }
-    pixelDiagnostic.slot = activeBuffer;
-    ID3D11Buffer *pixelBuffer = nullptr;
-    unsigned pixelCount = 0;
-    if (diagnosticContext)
-        diagnosticContext->PSGetConstantBuffers1(activeBuffer, 1, &pixelBuffer, &pixelDiagnostic.firstConstant, &pixelCount);
-    else ctx->PSGetConstantBuffers(activeBuffer, 1, &pixelBuffer);
-    if (pixelBuffer)
-    {
-        D3D11_BUFFER_DESC desc = {};
-        pixelBuffer->GetDesc(&desc);
-        unsigned offset = pixelDiagnostic.firstConstant * 16;
-        if (offset < desc.ByteWidth)
-        {
-            unsigned size = desc.ByteWidth - offset;
-            if (size > sizeof(ClipParameters)) size = sizeof(ClipParameters);
-            if (diagnosticContext && size > pixelCount * 16) size = pixelCount * 16;
-            pixelDiagnostic.bytes = size;
-            D3D11_BOX box = {offset, 0, 0, offset + size, 1, 1};
-            if (size) ctx->CopySubresourceRegion(diagnosticPixelStaging, 0, 0, 0, 0, pixelBuffer, 0, &box);
-        }
-        pixelBuffer->Release();
-    }
-    ID3D11PixelShader *bound = nullptr;
-    ctx->PSGetShader(&bound, nullptr, nullptr);
-    {
-        std::lock_guard<std::mutex> lock(variantMutex);
-        auto variant = variants.find(requestedShader);
-        if (variant != variants.end())
-            pixelDiagnostic.expectedBinding = bound == (opaqueDraw ? variant->second.opaque :
-                premultipliedDraw ? variant->second.premultiplied : variant->second.shader);
-        auto code = diagnosticShaders.find(requestedShader);
-        if (code != diagnosticShaders.end())
-        {
-            const auto &selected = opaqueDraw ? code->second.opaque :
-                premultipliedDraw ? code->second.premultiplied : code->second.clipped;
-            if (code->second.original.size() <= DiagnosticShaderBytes && selected.size() <= DiagnosticShaderBytes)
-            {
-                pixelDiagnostic.originalSize = static_cast<unsigned>(code->second.original.size());
-                pixelDiagnostic.clippedSize = static_cast<unsigned>(selected.size());
-                memcpy(pixelDiagnostic.original, code->second.original.data(), pixelDiagnostic.originalSize);
-                memcpy(pixelDiagnostic.clipped, selected.data(), pixelDiagnostic.clippedSize);
-            }
-        }
-    }
-    if (bound) bound->Release();
-    ctx->End(diagnosticQuery);
-    diagnosticCaptured = diagnosticPending = true;
-    RestoreDiagnosticDrawHooks();
+    if (slot == value) return;
+    if (slot) slot->Release();
+    slot = value;
+    if (slot) slot->AddRef();
 }
-void CollectWorldConstants()
+RasterVariant FindRaster(ID3D11RasterizerState *state)
 {
-    if (!diagnosticPending || context->GetData(diagnosticQuery, nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
-        return;
-    for (unsigned i = 0; i < DiagnosticSlots; ++i)
+    auto it = rasterVariants.find(state);
+    if (it != rasterVariants.end()) return it->second;
+    D3D11_RASTERIZER_DESC desc = {};
+    if (state) state->GetDesc(&desc);
+    else { desc.FillMode = D3D11_FILL_SOLID; desc.CullMode = D3D11_CULL_BACK; desc.DepthClipEnable = TRUE; }
+    RasterVariant variant;
+    variant.cull = desc.CullMode;
+    desc.CullMode = D3D11_CULL_NONE;
+    if (variant.cull != D3D11_CULL_NONE && FAILED(clipDevice->CreateRasterizerState(&desc, &variant.noCull)))
+        variant.noCull = nullptr;
+    if (state) state->AddRef(); // Pin the key: a freed pointer must never alias a new state.
+    rasterVariants.emplace(state, variant);
+    return variant;
+}
+DepthVariant FindDepth(ID3D11DepthStencilState *state)
+{
+    auto it = depthVariants.find(state);
+    if (it != depthVariants.end()) return it->second;
+    D3D11_DEPTH_STENCIL_DESC desc = {};
+    if (state) state->GetDesc(&desc);
+    else { desc.DepthEnable = TRUE; desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL; desc.DepthFunc = D3D11_COMPARISON_LESS; }
+    DepthVariant variant;
+    variant.stencil = desc.StencilEnable != FALSE;
+    // Base/prepass surfaces only; Equal repeats keep the stencil they found.
+    variant.marks = !variant.stencil && desc.DepthEnable && desc.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ALL &&
+        (desc.DepthFunc == D3D11_COMPARISON_LESS || desc.DepthFunc == D3D11_COMPARISON_LESS_EQUAL ||
+         desc.DepthFunc == D3D11_COMPARISON_GREATER || desc.DepthFunc == D3D11_COMPARISON_GREATER_EQUAL);
+    if (variant.marks)
     {
-        if (!diagnostic.sizes[i]) continue;
-        D3D11_MAPPED_SUBRESOURCE mapped = {};
-        HRESULT hr = context->Map(diagnosticStaging[i], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
-        if (hr != S_OK)
+        D3D11_DEPTH_STENCILOP_DESC zero = {D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_ZERO, D3D11_COMPARISON_ALWAYS};
+        D3D11_DEPTH_STENCILOP_DESC mark = zero; mark.StencilPassOp = D3D11_STENCIL_OP_REPLACE;
+        desc.StencilEnable = TRUE; desc.StencilReadMask = desc.StencilWriteMask = 0xff;
+        desc.FrontFace = desc.BackFace = zero;
+        bool created = SUCCEEDED(clipDevice->CreateDepthStencilState(&desc, &variant.zero));
+        desc.BackFace = mark; // Original cull BACK: back faces are the hidden ones.
+        created = created && SUCCEEDED(clipDevice->CreateDepthStencilState(&desc, &variant.facing[0]));
+        desc.FrontFace = mark; desc.BackFace = zero; // Original cull FRONT (flipped render).
+        created = created && SUCCEEDED(clipDevice->CreateDepthStencilState(&desc, &variant.facing[1]));
+        if (!created)
         {
-#ifdef QVVR_CLIP_TEST
-            printf("Diagnostic Map failed: %08x\n", static_cast<unsigned>(hr));
-#endif
-            return;
+            if (variant.zero) variant.zero->Release();
+            for (auto &facing : variant.facing) if (facing) facing->Release();
+            variant = DepthVariant{};
         }
-        memcpy(diagnostic.data[i], mapped.pData, diagnostic.sizes[i]);
-        context->Unmap(diagnosticStaging[i], 0);
     }
-    if (pixelDiagnostic.bytes)
+    if (state) state->AddRef();
+    depthVariants.emplace(state, variant);
+    return variant;
+}
+bool BackFaceEligible()
+{
+    return backFaceTracking && clipping && worldTarget && opaqueDraw && boundDepthStencil && depthVariant.marks &&
+        cylinderCaps.BackFaceWanted();
+}
+void BindBackFace(ID3D11DeviceContext *ctx, int binding)
+{
+    if (binding == 2 && !rasterVariant.noCull) binding = 1;
+    backFaceBinding = binding;
+    if (binding == 2)
     {
-        D3D11_MAPPED_SUBRESOURCE mapped = {};
-        if (context->Map(diagnosticPixelStaging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped) != S_OK) return;
-        memcpy(&pixelDiagnostic.gpuParameters, mapped.pData, pixelDiagnostic.bytes);
-        context->Unmap(diagnosticPixelStaging, 0);
+        originalRaster(ctx, rasterVariant.noCull);
+        originalDepth(ctx, depthVariant.facing[rasterVariant.cull == D3D11_CULL_FRONT ? 1 : 0], 1);
+        return;
     }
-    diagnosticPending = false;
-    diagnosticReady.store(true, std::memory_order_release);
+    originalRaster(ctx, requestedRaster);
+    if (binding == 1) originalDepth(ctx, depthVariant.zero, 1);
+    else originalDepth(ctx, requestedDepth, requestedStencilRef);
+}
+// Blend/target changes and composites: conservative stencil-zero binding; the
+// indexed draw hook upgrades registered solids right before they draw.
+void RefreshBackFace(ID3D11DeviceContext *ctx)
+{
+    if (ctx != context || !clipping || !backFaceTracking) return;
+    int binding = BackFaceEligible() ? 1 : 0;
+    if (binding != backFaceBinding && !(binding == 1 && backFaceBinding == 2)) BindBackFace(ctx, binding);
+}
+void BackFaceDraw(ID3D11DeviceContext *ctx, bool indexed)
+{
+    if (ctx != context || !clipping || !backFaceTracking) return;
+    int binding = 0;
+    if (BackFaceEligible())
+        binding = indexed && rasterVariant.noCull && cylinderCaps.BackFaceMesh() ? 2 : 1;
+    if (binding != backFaceBinding) BindBackFace(ctx, binding);
+    if (binding) cylinderCaps.BackFaceMarked(boundDepthView);
+}
+void STDMETHODCALLTYPE HookRaster(ID3D11DeviceContext *ctx, ID3D11RasterizerState *state)
+{
+    if (internalCapDraw || ctx != context || !clipping || !backFaceTracking) { originalRaster(ctx, state); return; }
+    Hold(requestedRaster, state);
+    rasterVariant = FindRaster(state);
+    int binding = BackFaceEligible() ? 1 : 0;
+    if (binding == 0 && backFaceBinding == 0) originalRaster(ctx, state);
+    else BindBackFace(ctx, binding);
+}
+void STDMETHODCALLTYPE HookDepth(ID3D11DeviceContext *ctx, ID3D11DepthStencilState *state, UINT reference)
+{
+    if (internalCapDraw || ctx != context || !clipping || !backFaceTracking) { originalDepth(ctx, state, reference); return; }
+    Hold(requestedDepth, state);
+    requestedStencilRef = reference;
+    depthVariant = FindDepth(state);
+    // The game owns the eye stencil: exact caps for the rest of this scene.
+    if (depthVariant.stencil && worldTarget && cylinderCaps.BackFaceWanted()) cylinderCaps.FlagStencilConflict();
+    int binding = BackFaceEligible() ? 1 : 0;
+    if (binding == 0 && backFaceBinding == 0) originalDepth(ctx, state, reference);
+    else BindBackFace(ctx, binding);
 }
 void STDMETHODCALLTYPE HookDraw(ID3D11DeviceContext *ctx, UINT count, UINT start)
 {
     if (internalCapDraw) { originalDraw(ctx, count, start); return; }
-    CaptureWorldConstants(ctx);
+    BackFaceDraw(ctx, false);
     originalDraw(ctx, count, start);
 }
 bool BeginCapVolume(ID3D11DeviceContext *ctx)
@@ -682,26 +683,26 @@ void EndCapVolume()
 void STDMETHODCALLTYPE HookDrawIndexed(ID3D11DeviceContext *ctx, UINT count, UINT start, INT base)
 {
     if (internalCapDraw) { originalDrawIndexed(ctx, count, start, base); return; }
-    CaptureWorldConstants(ctx);
+    BackFaceDraw(ctx, true);
     if (BeginCapVolume(ctx)) { originalDrawIndexed(ctx, count, start, base); EndCapVolume(); }
     originalDrawIndexed(ctx, count, start, base);
 }
 void STDMETHODCALLTYPE HookDrawIndexedInstanced(ID3D11DeviceContext *ctx, UINT count, UINT instances, UINT start, INT base, UINT first)
 {
     if (internalCapDraw) { originalDrawIndexedInstanced(ctx, count, instances, start, base, first); return; }
-    CaptureWorldConstants(ctx);
+    BackFaceDraw(ctx, true);
     if (BeginCapVolume(ctx)) { originalDrawIndexedInstanced(ctx, count, instances, start, base, first); EndCapVolume(); }
     originalDrawIndexedInstanced(ctx, count, instances, start, base, first);
 }
 void STDMETHODCALLTYPE HookDrawIndexedIndirect(ID3D11DeviceContext *ctx, ID3D11Buffer *args, UINT offset)
 {
     if (internalCapDraw) { originalDrawIndexedIndirect(ctx, args, offset); return; }
-    CaptureWorldConstants(ctx);
+    BackFaceDraw(ctx, true);
     if (BeginCapVolume(ctx)) { originalDrawIndexedIndirect(ctx, args, offset); EndCapVolume(); }
     originalDrawIndexedIndirect(ctx, args, offset);
 }
 bool Replace(void **table, unsigned index, void *function, void **original);
-void RestoreDiagnosticDrawHooks()
+void RestoreDrawHooks()
 {
     if (cylinderCaps.Active()) return;
     auto table = *reinterpret_cast<void ***>(context);
@@ -715,23 +716,20 @@ void RestoreDiagnosticDrawHooks()
     if (table[39] == reinterpret_cast<void *>(&HookDrawIndexedIndirect))
         Replace(table, 39, reinterpret_cast<void *>(originalDrawIndexedIndirect), &ignored);
 }
-void ArmDiagnosticDrawHooks()
+void ArmDrawHooks()
 {
-    if (internalCapDraw || ((!diagnosticArmed || diagnosticCaptured) && !cylinderCaps.Active())) return;
+    if (internalCapDraw || !cylinderCaps.Active()) return;
     // The D3D11 runtime specializes its Draw entry points when shaders/states
-    // change. Refresh only while this single snapshot is waiting for a draw.
+    // change. Refresh them while caps are active.
     auto table = *reinterpret_cast<void ***>(context);
     if (table[12] != reinterpret_cast<void *>(&HookDrawIndexed))
         Replace(table, 12, reinterpret_cast<void *>(&HookDrawIndexed), reinterpret_cast<void **>(&originalDrawIndexed));
     if (table[13] != reinterpret_cast<void *>(&HookDraw))
         Replace(table, 13, reinterpret_cast<void *>(&HookDraw), reinterpret_cast<void **>(&originalDraw));
-    if (cylinderCaps.Active())
-    {
-        if (table[20] != reinterpret_cast<void *>(&HookDrawIndexedInstanced))
-            Replace(table, 20, reinterpret_cast<void *>(&HookDrawIndexedInstanced), reinterpret_cast<void **>(&originalDrawIndexedInstanced));
-        if (table[39] != reinterpret_cast<void *>(&HookDrawIndexedIndirect))
-            Replace(table, 39, reinterpret_cast<void *>(&HookDrawIndexedIndirect), reinterpret_cast<void **>(&originalDrawIndexedIndirect));
-    }
+    if (table[20] != reinterpret_cast<void *>(&HookDrawIndexedInstanced))
+        Replace(table, 20, reinterpret_cast<void *>(&HookDrawIndexedInstanced), reinterpret_cast<void **>(&originalDrawIndexedInstanced));
+    if (table[39] != reinterpret_cast<void *>(&HookDrawIndexedIndirect))
+        Replace(table, 39, reinterpret_cast<void *>(&HookDrawIndexedIndirect), reinterpret_cast<void **>(&originalDrawIndexedIndirect));
 }
 HRESULT STDMETHODCALLTYPE HookCreate(ID3D11Device *device, const void *bytes, SIZE_T size, ID3D11ClassLinkage *linkage,
                                      ID3D11PixelShader **shader)
@@ -741,25 +739,14 @@ HRESULT STDMETHODCALLTYPE HookCreate(ID3D11Device *device, const void *bytes, SI
     {
         Variant v = {discardShader, discardShader, discardShader, 13};
         std::vector<std::uint8_t> code;
-        DiagnosticBytecode capture;
         bool supported = !linkage && PatchCylinderShader(bytes, size, code, v.slot) &&
             SUCCEEDED(originalCreate(device, code.data(), code.size(), nullptr, &v.shader));
-        if (supported && diagnosticEnabled) capture.clipped = code;
         supported = supported && PatchCylinderShader(bytes, size, code, v.slot, true) &&
             SUCCEEDED(originalCreate(device, code.data(), code.size(), nullptr, &v.opaque));
-        if (supported && diagnosticEnabled) capture.opaque = code;
         supported = supported && PatchCylinderShader(bytes, size, code, v.slot, false, true) &&
             SUCCEEDED(originalCreate(device, code.data(), code.size(), nullptr, &v.premultiplied));
         if (supported)
-        {
-            if (diagnosticEnabled)
-            {
-                capture.premultiplied = std::move(code);
-                auto start = static_cast<const std::uint8_t *>(bytes);
-                capture.original.assign(start, start + size);
-            }
             ++patchedCount;
-        }
         else
         {
             if (v.shader != discardShader)
@@ -771,7 +758,6 @@ HRESULT STDMETHODCALLTYPE HookCreate(ID3D11Device *device, const void *bytes, SI
         }
         // Keep original alive until process shutdown, preventing pointer reuse.
         std::lock_guard<std::mutex> lock(variantMutex);
-        if (supported && diagnosticEnabled) diagnosticShaders.emplace(*shader, std::move(capture));
         if (variants.emplace(*shader, v).second)
             (*shader)->AddRef();
         else
@@ -861,7 +847,7 @@ void STDMETHODCALLTYPE HookSet(ID3D11DeviceContext *ctx, ID3D11PixelShader *shad
             originalCB(ctx, activeBuffer, 1, &savedBuffers[activeBuffer]);
         originalSet(ctx, shader, classes, count);
     }
-    if (ctx == context) ArmDiagnosticDrawHooks();
+    if (ctx == context) ArmDrawHooks();
 }
 void STDMETHODCALLTYPE HookBlend(ID3D11DeviceContext *ctx, ID3D11BlendState *state, const FLOAT factors[4], UINT mask);
 bool IsWorldTarget(ID3D11RenderTargetView *view)
@@ -879,11 +865,17 @@ bool IsWorldTarget(ID3D11RenderTargetView *view)
         resource->Release();
     return result;
 }
-void UpdateTarget(ID3D11DeviceContext *ctx, UINT count, ID3D11RenderTargetView *const *views)
+void UpdateTarget(ID3D11DeviceContext *ctx, UINT count, ID3D11RenderTargetView *const *views, ID3D11DepthStencilView *depth)
 {
     if (ctx != context || !clipping)
         return;
     worldTarget = count > 0 && views && IsWorldTarget(views[0]);
+    if (backFaceTracking && depth != boundDepthView)
+    {
+        boundDepthView = depth;
+        boundDepthStencil = qvvr::CylinderCaps::HasStencil(depth);
+    }
+    cylinderCaps.TargetsChanged(); // Inline caps re-verify the bound eye depth once.
     // Corrected variants apply only to the eye color target, not shadow maps
     // and auxiliary targets created inside Camera.Render.
     HookBlend(ctx, savedBlend, savedFactors, savedSampleMask);
@@ -895,7 +887,7 @@ void STDMETHODCALLTYPE HookTargets(ID3D11DeviceContext *ctx, UINT count, ID3D11R
         (!depth || !count || !views || !IsWorldTarget(views[0])))
     { internalCapDraw = true; cylinderCaps.Composite(); internalCapDraw = false; }
     originalTargets(ctx, count, views, depth);
-    if (!internalCapDraw) UpdateTarget(ctx, count, views);
+    if (!internalCapDraw) UpdateTarget(ctx, count, views, depth);
 }
 void STDMETHODCALLTYPE HookTargetsUav(ID3D11DeviceContext *ctx, UINT count, ID3D11RenderTargetView *const *views,
                                       ID3D11DepthStencilView *depth, UINT start, UINT uavs,
@@ -907,7 +899,7 @@ void STDMETHODCALLTYPE HookTargetsUav(ID3D11DeviceContext *ctx, UINT count, ID3D
     { internalCapDraw = true; cylinderCaps.Composite(); internalCapDraw = false; }
     originalTargetsUav(ctx, count, views, depth, start, uavs, unordered, counts);
     if (!internalCapDraw && count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
-        UpdateTarget(ctx, count, views);
+        UpdateTarget(ctx, count, views, depth);
 }
 void STDMETHODCALLTYPE HookBlend(ID3D11DeviceContext *ctx, ID3D11BlendState *state, const FLOAT factors[4], UINT mask)
 {
@@ -943,6 +935,7 @@ void STDMETHODCALLTYPE HookBlend(ID3D11DeviceContext *ctx, ID3D11BlendState *sta
     }
     originalBlend(ctx, use, factors, mask);
     HookSet(ctx, requestedShader, nullptr, 0);
+    RefreshBackFace(ctx); // Opacity decides whether depth writes mark the stencil.
 }
 void STDMETHODCALLTYPE HookBuffers(ID3D11DeviceContext *ctx, UINT start, UINT count, ID3D11Buffer *const *buffers)
 {
@@ -963,7 +956,7 @@ void STDMETHODCALLTYPE HookBuffers(ID3D11DeviceContext *ctx, UINT start, UINT co
     originalCB(ctx, start, count, buffers);
     if (ctx == context && clipping && worldTarget && start <= activeBuffer && start + count > activeBuffer)
         originalCB(ctx, activeBuffer, 1, &clipBuffer);
-    if (ctx == context) ArmDiagnosticDrawHooks();
+    if (ctx == context) ArmDrawHooks();
 }
 bool Replace(void **table, unsigned index, void *function, void **original)
 {
@@ -985,25 +978,14 @@ bool InstallShaderClip(ID3D11Device *device)
     // Optional pipeline: failure never disables clipping/VR. Its own shaders
     // are created before shader interception and never enter game variants.
     cylinderCaps.Initialize(device);
+    clipDevice = device;
     device->GetImmediateContext(&context);
-    if (diagnosticEnabled) context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void **>(&diagnosticContext));
     D3D11_BUFFER_DESC desc = {};
     desc.ByteWidth = sizeof(ClipParameters);
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     if (FAILED(device->CreateBuffer(&desc, nullptr, &clipBuffer)))
         return false;
-    // Diagnostic resources are optional: failure must not disable VR/clipping.
-    D3D11_BUFFER_DESC staging = {};
-    staging.ByteWidth = DiagnosticBytes;
-    staging.Usage = D3D11_USAGE_STAGING;
-    staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    bool diagnosticAvailable = diagnosticEnabled;
-    if (diagnosticEnabled) for (auto &buffer : diagnosticStaging)
-        if (FAILED(device->CreateBuffer(&staging, nullptr, &buffer))) diagnosticAvailable = false;
-    if (diagnosticEnabled && FAILED(device->CreateBuffer(&staging, nullptr, &diagnosticPixelStaging))) diagnosticAvailable = false;
-    D3D11_QUERY_DESC query = {D3D11_QUERY_EVENT, 0};
-    if (diagnosticAvailable) device->CreateQuery(&query, &diagnosticQuery);
     const char *source = "float4 main():SV_Target{clip(-1);return 0;}";
     ID3DBlob *b = nullptr;
     if (FAILED(D3DCompile(source, strlen(source), nullptr, nullptr, nullptr, "main", "ps_4_0", 0, 0, &b, nullptr)))
@@ -1036,7 +1018,9 @@ bool InstallShaderClip(ID3D11Device *device)
            Replace(contextTable, 33, reinterpret_cast<void *>(&HookTargets),
                    reinterpret_cast<void **>(&originalTargets)) &&
            Replace(contextTable, 34, reinterpret_cast<void *>(&HookTargetsUav),
-                   reinterpret_cast<void **>(&originalTargetsUav));
+                   reinterpret_cast<void **>(&originalTargetsUav)) &&
+           Replace(contextTable, 36, reinterpret_cast<void *>(&HookDepth), reinterpret_cast<void **>(&originalDepth)) &&
+           Replace(contextTable, 43, reinterpret_cast<void *>(&HookRaster), reinterpret_cast<void **>(&originalRaster));
 }
 void SetShaderClipTargets(ID3D11Texture2D *left, ID3D11Texture2D *right)
 {
@@ -1060,27 +1044,22 @@ void CompositeShaderCaps()
 {
     if (!context || !clipping || !worldTarget || !cylinderCaps.Active()) return;
     internalCapDraw = true; cylinderCaps.Composite(); internalCapDraw = false;
+    RefreshBackFace(context); // Transparent draws get the requested states back.
 }
 void GetCapStats(unsigned &available, unsigned &registered, unsigned &replayed, unsigned &composed)
 { cylinderCaps.Stats(available, registered, replayed, composed); }
 void GetCapCullStats(unsigned &bounded, unsigned &skipped) { cylinderCaps.CullStats(bounded, skipped); }
-void ConfigureShaderDiagnostics(bool enabled) { if (!context) diagnosticEnabled = enabled; }
-#ifdef QVVR_CLIP_TEST
-void ShaderDiagnosticTestStats(unsigned &buffers, unsigned &shaders)
-{
-    buffers = diagnosticPixelStaging ? 1u : 0u;
-    for (auto buffer : diagnosticStaging) if (buffer) ++buffers;
-    shaders = static_cast<unsigned>(diagnosticShaders.size());
-}
-#endif
+void SetCapInlineEnabled(bool enabled) { cylinderCaps.SetInlineEnabled(enabled); }
+void SetCapMode(int mode) { cylinderCaps.SetMode(mode); }
+unsigned GetCapBackFaceEyes() { return cylinderCaps.BackFaceEyes(); }
+void GetCapModeStats(unsigned &inlineEyes, unsigned &privateEyes, bool &stencilConflict)
+{ cylinderCaps.ModeStats(inlineEyes, privateEyes, stencilConflict); }
+int GetCapInlineVariants() { return cylinderCaps.InlineVariants(); }
 void BeginShaderClip(const ClipParameters &parameters, bool caps, bool reversedZ, bool transparent, const CapCullVolume *cull, const CapSkipFrame *skip)
 {
     if (!context || clipping)
         return;
     cylinderCaps.Begin(parameters, caps, reversedZ, transparent, cull, skip);
-    if (diagnosticEnabled) CollectWorldConstants();
-    diagnosticArmed = diagnosticEnabled && diagnosticQuery && !diagnosticCaptured && parameters.limits[0] > 4.f && parameters.limits[0] < 1e20f;
-    if (diagnosticArmed) diagnostic.parameters = parameters;
     savedClassCount = 256;
     context->PSGetShader(&savedShader, savedClasses, &savedClassCount);
     context->PSGetConstantBuffers(0, 14, savedBuffers);
@@ -1093,17 +1072,23 @@ void BeginShaderClip(const ClipParameters &parameters, bool caps, bool reversedZ
     worldTarget = IsWorldTarget(target);
     if (target)
         target->Release();
+    backFaceTracking = cylinderCaps.BackFaceWanted();
+    backFaceBinding = 0;
+    if (backFaceTracking)
+    {
+        context->RSGetState(&requestedRaster);
+        context->OMGetDepthStencilState(&requestedDepth, &requestedStencilRef);
+        rasterVariant = FindRaster(requestedRaster);
+        depthVariant = FindDepth(requestedDepth);
+        if (depthVariant.stencil && worldTarget) cylinderCaps.FlagStencilConflict();
+        ID3D11DepthStencilView *depth = nullptr;
+        context->OMGetRenderTargets(0, nullptr, &depth);
+        boundDepthView = depth; // Bound views stay alive; keep no reference.
+        boundDepthStencil = qvvr::CylinderCaps::HasStencil(depth);
+        if (depth)
+            depth->Release();
+    }
     HookBlend(context, savedBlend, savedFactors, savedSampleMask);
-}
-bool WriteShaderClipDiagnostic(const wchar_t *path)
-{
-    if (!diagnosticEnabled || !path || !diagnosticReady.load(std::memory_order_acquire)) return false;
-    FILE *file = nullptr;
-    if (_wfopen_s(&file, path, L"wb") != 0 || !file) return false;
-    bool success = fwrite(&diagnostic, sizeof(diagnostic), 1, file) == 1;
-    success = success && fwrite(&pixelDiagnostic, sizeof(pixelDiagnostic), 1, file) == 1;
-    fclose(file);
-    return success;
 }
 void EndShaderClip()
 {
@@ -1111,12 +1096,21 @@ void EndShaderClip()
         return;
     internalCapDraw = true; cylinderCaps.Composite(); internalCapDraw = false;
     cylinderCaps.End();
-    RestoreDiagnosticDrawHooks();
+    RestoreDrawHooks();
     clipping = false;
     // Restore Unity's latest requested bindings, matching its state cache.
     originalSet(context, requestedShader, nullptr, 0);
     originalCB(context, 0, 14, savedBuffers);
     originalBlend(context, savedBlend, savedFactors, savedSampleMask);
+    if (backFaceTracking)
+    {
+        originalRaster(context, requestedRaster);
+        originalDepth(context, requestedDepth, requestedStencilRef);
+        if (requestedRaster) requestedRaster->Release();
+        if (requestedDepth) requestedDepth->Release();
+        requestedRaster = nullptr; requestedDepth = nullptr;
+        boundDepthView = nullptr; backFaceTracking = false; backFaceBinding = 0;
+    }
     if (savedBlend)
     {
         savedBlend->Release();
