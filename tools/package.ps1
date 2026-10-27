@@ -58,6 +58,7 @@ $manifest = [ordered]@{
     releaseStatus = 'candidate-pending-headset-qa'
     sourceCommit = $sourceCommit
     sourceDirty = $sourceDirty
+    diagnostics = $Configuration -ne 'Release'
     backend = 'Exclusive-OpenXR-with-OpenVR-fallback'
     passthrough = 'OpenXR-ALPHA_BLEND-opt-in'
     clipping = 'D3D11-global-fragment-cylinder'

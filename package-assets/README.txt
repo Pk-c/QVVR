@@ -4,7 +4,8 @@ QVVR 0.1.0 - Experimental release candidate
 Hub/costume/map screens in 001_Intro can render in full stereo without diorama
 clipping or passthrough. Title/loading/other states remain 2D. Use 3D costume/map
 menus in settings to test it or recover flat capture if framing/transitions fail.
-Their UI shares gameplay HUD size, distance, upright follow and capture rate.
+Their UI shares gameplay HUD size, distance and upright follow; it refreshes
+at the 72 Hz menu capture rate.
 Exception: only the stereo costume-access hub uses HUD scale 4. Distances and
 the saved normal HUD scale for maps/costume selection/gameplay stay unchanged.
 Stereo selections are enabled in the reference Frame profile; config false
@@ -81,10 +82,10 @@ Controls:
   independent diorama VR (range 1.5-5.5; 5.5 restores native timing). Original
   callbacks still start dialogue/tutorials/controls. Story movies and desktop
   retain their timing; applies at the next entry, not to an active transition.
+  Comfort.SkipLevelTour=true skips the level-start camera tour in independent
+  VR with the game's own skip (level 1-1's story intro is kept). False restores it.
   Performance.LightweightUiMaintenance=true avoids repeated HUD subscriptions;
   continuous UI keeps full capture rate with a cache recovery probe every 2 s.
-  Performance.DiagnosticsEnabled=false writes no periodic logs. True adds
-  5-second cadence/CPU/GPU measurement lines after a manual restart.
   Both stick clicks: open/close QVVR settings.
   Layout=TrackpadWands: right trigger primary/confirm, right application-menu
   secondary/back, left application-menu pause, left pad click swap, left trigger
@@ -160,7 +161,7 @@ Passthrough and fallback:
 Quality:
   Profiles Performance / Balanced / Sharp use 0.85 / 1.0 / 1.15 resolution.
   Profiles take effect on the next manual launch; MSAA defaults to 2x.
-  Gameplay/stereo intro HUD: 36 Hz. Flat menus: 72 Hz.
+  Gameplay HUD: 36 Hz. Stereo hub/costume/map and flat menus: 72 Hz.
   UI: 3360x1890 (1.75x) with GPU mipmaps; scene resolution is unchanged.
   UI-only sharpness test: +36.1% capture pixels, not total GPU time.
   Old default 1.5 migrates once; custom values are preserved.
@@ -179,7 +180,7 @@ Quality:
   Experimental features may still have rendering, input or performance issues.
 
 Diagnostics:
-  Runtime log: BepInEx/LogOutput.log.
+  Runtime log: BepInEx/LogOutput.log (startup state, warnings and errors only).
   Logs may contain private paths; review them before sharing.
   Do not publish raw diagnostics, saved configurations or game assets.
 

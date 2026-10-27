@@ -3,6 +3,8 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <LangVersion>7.3</LangVersion>
     <DefineConstants>UNITY_5_3_OR_NEWER</DefineConstants>
+    <!-- Developer measurement logs/GPU timers: Debug builds only, never the release package. -->
+    <DefineConstants Condition="'$(Configuration)' != 'Release'">$(DefineConstants);QVVR_DIAGNOSTICS</DefineConstants>
     <Nullable>disable</Nullable>
     <AssemblyName>QVVR</AssemblyName>
     <RootNamespace>QVVR</RootNamespace>

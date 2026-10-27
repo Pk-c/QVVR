@@ -21,7 +21,7 @@ namespace QVVR
                 harmony = new Harmony(Plugin.Guid + ".camera-listener");
                 harmony.Patch(update, transpiler: new HarmonyMethod(typeof(QvCameraCompatibility), "ReplaceMainCamera"));
                 active = renderer;
-                Plugin.Log.LogInfo("QVVR CameraListener compatibility active: disabled source camera remains accessible.");
+                Plugin.Trace("QVVR CameraListener compatibility active: disabled source camera remains accessible.");
             }
             catch (Exception exception)
             {

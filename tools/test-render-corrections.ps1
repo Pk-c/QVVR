@@ -6,7 +6,7 @@ $anchor=(Get-Content (Join-Path $root 'src/QVVR/FixedPanelAnchor.cs') -Raw).Repl
 $buttons=Get-Content (Join-Path $root 'src/QVVR/ControllerButtonPolicy.cs') -Raw
 $rendererSource=Get-Content (Join-Path $root 'src/QVVR/OpenVrManager.cs') -Raw
 $start=$rendererSource.IndexOf('        private static void RenderPanelOverlay(')
-$end=$rendererSource.IndexOf('        private void ProfileMark(', $start)
+$end=$rendererSource.IndexOf('        // GPU phase markers:', $start)
 $overlay=$rendererSource.Substring($start,$end-$start).Replace('private static void','public static void')
 # Execute actual production code with headless API doubles; no game/VR session.
 $fixture=@'

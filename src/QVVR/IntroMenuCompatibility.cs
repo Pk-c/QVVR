@@ -56,7 +56,7 @@ namespace QVVR
                         MethodInfo enter = type == null ? null : AccessTools.DeclaredMethod(type, "Enter");
                         if (enter != null) harmony.Patch(enter, postfix: new HarmonyMethod(typeof(IntroMenuCompatibility), state + "Entered"));
                     }
-                Plugin.Log.LogInfo("QVVR intro menu compatibility: hub/costume/map state hooks; unknown states stay 2D.");
+                Plugin.Trace("QVVR intro menu compatibility: hub/costume/map state hooks; unknown states stay 2D.");
             }
             catch (Exception exception)
             {

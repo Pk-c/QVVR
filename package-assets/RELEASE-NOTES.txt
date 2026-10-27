@@ -20,7 +20,7 @@ Highlights
   free-camera yaw/forward/back. Preserves diorama placement for switching back.
 - Shorter ordinary level-entry transition in independent VR (1.5 s vs 5.5 s).
 - Water foam compatibility trial for the white-water artifact seen from above.
-- Lightweight UI maintenance and opt-in developer diagnostics.
+- Lightweight UI maintenance; measurement diagnostics are compiled out of the release.
 - OpenVR pose prediction follows SteamVR cadence/vsync/display delay rather than
   a fixed 72 Hz assumption; timing and input regression fixtures cover both APIs.
 

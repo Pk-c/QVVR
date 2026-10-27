@@ -53,6 +53,14 @@ namespace QVVR
             return next < 0.49f ? 0f : Math.Max(0.5f, Math.Min(1.5f, next));
         }
 
+        // A quarter interval early still counts: frame jitter must not drop a
+        // capture whose rate matches the display (72 Hz menus), while a 36 Hz
+        // HUD on 72 Hz frames still skips every other frame.
+        internal static bool CaptureDue(float now, float deadline, int rate)
+        {
+            return now >= deadline - 0.25f / Math.Max(1, rate);
+        }
+
         internal static float NextCapture(float now, float previousDeadline, int rate)
         {
             float interval = 1f / Math.Max(1, rate);

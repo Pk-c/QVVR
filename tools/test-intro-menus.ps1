@@ -21,7 +21,10 @@ namespace QVVR {
    foreach(string name in new string[]{null,"IntroState.TitleState","IntroState.ExitState","NewIntroState.TitleState","NewIntroState.ExitState","OtherGame.StageState"})
     Check(!MenuScenePolicy.StereoSelection(true,true,MenuScenePolicy.State(name)),"All other presentation states stay 2D.");
    Check(MenuScenePolicy.UseGameplayHud(true,false),"Existing gameplay HUD treatment preserved.");
-   Check(MenuScenePolicy.UseGameplayHud(false,true),"Stereo intro UI shares gameplay HUD scale, distance and capture cadence.");
+   Check(MenuScenePolicy.UseGameplayHud(false,true),"Stereo intro UI shares gameplay HUD scale and distance.");
+   Check(MenuScenePolicy.CaptureRate(true,36,72)==36,"Gameplay HUD keeps its own capture rate.");
+   Check(MenuScenePolicy.CaptureRate(false,36,72)==72,"Stereo map/costume/hub UI refreshes at the menu rate.");
+   Check(MenuScenePolicy.CaptureRate(false,36,0)==1&&MenuScenePolicy.CaptureRate(true,500,72)==72,"Capture rates stay within 1-72 Hz.");
    Check(MenuScenePolicy.UseGameplayHud(true,true),"Gameplay still uses its HUD if both flags are present.");
    Check(!MenuScenePolicy.UseGameplayHud(false,false),"Title/unknown/disabled-option 2D recovery retains menu UI treatment.");
    Check(MenuScenePolicy.HubHudScale(true,IntroPresentation.World,2)==4,"Only costume-access hub HUD gets scale 4.");

@@ -29,7 +29,7 @@ namespace QVVR
                     patched++;
                 }
                 if (patched == 0) throw new MissingMemberException("GameManager character swap methods unavailable.");
-                Plugin.Log.LogInfo("QVVR character swap compatibility active: " + patched + " swap methods observed.");
+                Plugin.Trace("QVVR character swap compatibility active: " + patched + " swap methods observed.");
             }
             catch (Exception error)
             {

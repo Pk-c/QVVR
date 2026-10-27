@@ -52,7 +52,7 @@ namespace HarmonyLib {
 namespace QVVR {
  internal class Logger {public void LogInfo(string s){}public void LogError(string s){}public void LogWarning(string s){}}
  internal class Plugin {
-  internal const string Guid="fixture";internal static Logger Log=new Logger();
+  internal const string Guid="fixture";internal static Logger Log=new Logger();internal static void Trace(string s){}
   internal ConfigEntry<bool> VrEnabled,VrControllerInput,TwoGripWorldGrab;internal ControllerInputConfiguration InputControls;
   internal ConfigFile File=new ConfigFile();
   internal Plugin(){VrEnabled=File.Bind("Controls","VR",true,"");VrControllerInput=File.Bind("Controls","Input",true,"");TwoGripWorldGrab=File.Bind("Controls","Grips",true,"");InputControls=new ControllerInputConfiguration(File);}

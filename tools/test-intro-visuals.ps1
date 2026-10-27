@@ -42,7 +42,7 @@ public class IntroWorldManager : UnityEngine.Object { public UnityEngine.Transfo
 public class IntroStageUIManager : UnityEngine.Object { public UnityEngine.Renderer _dim=new UnityEngine.Renderer(); }
 namespace QVVR {
  public class StubLog {public void LogInfo(string value){} public void LogWarning(string value){} }
- public class Plugin {public const string Guid="test"; public static StubLog Log=new StubLog();}
+ public class Plugin {public const string Guid="test"; public static StubLog Log=new StubLog(); public static void Trace(string value){}}
  internal class OpenVrRenderer {internal void SetIntroPresentation(IntroPresentation state){} internal void BeginStageFade(UnityEngine.UI.Image panel){} }
  public static class IntroVisualTests {
   static int checks;

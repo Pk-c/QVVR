@@ -125,7 +125,7 @@ namespace QVVR
                         finalizer: new HarmonyMethod(typeof(OpenVrInputBridge), "EndMovementQuery"));
                 }
                 active = this;
-                Plugin.Log.LogInfo("QVVR configurable controller bridge active: [Input] logical roles, separate gameplay/menu actions, layout=" + plugin.InputControls.Bindings.Layout +
+                Plugin.Trace("QVVR configurable controller bridge active: [Input] logical roles, separate gameplay/menu actions, layout=" + plugin.InputControls.Bindings.Layout +
                     ", exclusive VR controls=" + plugin.InputControls.Bindings.Exclusive + ". OpenXR actions / OpenVR legacy compatibility; original desktop fallback retained.");
             }
             catch (Exception exception)
@@ -213,7 +213,7 @@ namespace QVVR
             if ((hasLeft || hasRight) && !loggedControllers)
             {
                 loggedControllers = true;
-                Plugin.Log.LogInfo("QVVR " + (xr ? "exclusive OpenXR" : "OpenVR") + " controller states received: left=" + hasLeft + ", right=" + hasRight);
+                Plugin.Trace("QVVR " + (xr ? "exclusive OpenXR" : "OpenVR") + " controller states received: left=" + hasLeft + ", right=" + hasRight);
             }
 
             // OpenXR is already normalized into this compatibility state. On
@@ -285,7 +285,7 @@ namespace QVVR
             if (held != 0 && !loggedInput)
             {
                 loggedInput = true;
-                Plugin.Log.LogInfo("QVVR first controller navigation/button input received.");
+                Plugin.Trace("QVVR first controller navigation/button input received.");
             }
         }
 

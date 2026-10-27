@@ -69,7 +69,7 @@ namespace QVVR
                 footer.text = "Up/down: select   Left/right: adjust\nA: action   B or both sticks: close and save\nDiorama: both grips; full VR: right stick camera\nRender scale and MSAA: next launch; game not paused";
                 RefreshText();
                 root.SetActive(false);
-                Plugin.Log.LogInfo("QVVR world-anchored settings menu ready: click both sticks to toggle.");
+                Plugin.Trace("QVVR world-anchored settings menu ready: click both sticks to toggle.");
             }
             catch (Exception exception)
             {
@@ -119,7 +119,7 @@ namespace QVVR
             if (!Visible) return;
             root.SetActive(false);
             plugin.Config.Save();
-            Plugin.Log.LogInfo("QVVR comfort settings saved.");
+            Plugin.Trace("QVVR comfort settings saved.");
         }
 
         internal void ResetAnchor() { anchorNeeded = true; }

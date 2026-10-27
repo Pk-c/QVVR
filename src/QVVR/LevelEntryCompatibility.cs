@@ -1,8 +1,10 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
+using UnityEngine;
 
 namespace QVVR
 {
@@ -16,6 +18,13 @@ namespace QVVR
             if (float.IsNaN(requested) || float.IsInfinity(requested)) requested = 1.5f;
             return Math.Max(1.5f, Math.Min(5.5f, requested));
         }
+
+        // The level-start camera tour cannot be followed from an independent VR
+        // view. Level 1-1's director is the story intro, shown on a flat screen.
+        internal static bool SkipTour(bool independentVr, bool enabled, bool firstLevel)
+        {
+            return independentVr && enabled && !firstLevel;
+        }
     }
 
     internal sealed class LevelEntryCompatibility
@@ -24,6 +33,9 @@ namespace QVVR
         private OpenVrRenderer renderer;
         private Plugin plugin;
         private Harmony harmony;
+        private FieldInfo directorField;
+        private MethodInfo stopMethod;
+        private PropertyInfo stateProperty;
 
         internal void Initialize(OpenVrRenderer owner, Plugin settings)
         {
@@ -36,7 +48,8 @@ namespace QVVR
                 harmony = new Harmony(Plugin.Guid + ".level-entry");
                 harmony.Patch(start, transpiler: new HarmonyMethod(typeof(LevelEntryCompatibility), "ShortenFade"));
                 active = this;
-                Plugin.Log.LogInfo("QVVR level-entry timing compatibility active: independent VR only; original callbacks and cinematics retained.");
+                Plugin.Trace("QVVR level-entry timing compatibility active: independent VR only; original callbacks and cinematics retained.");
+                PatchTour(manager);
             }
             catch (Exception error)
             {
@@ -70,6 +83,48 @@ namespace QVVR
                 parameters[1].ParameterType == typeof(float) && parameters[2].ParameterType == typeof(float);
         }
 
+        // Optional: failure keeps the original tour and the fade shortening.
+        private void PatchTour(Type manager)
+        {
+            try
+            {
+                MethodInfo setDirector = AccessTools.DeclaredMethod(manager, "SetDirector", Type.EmptyTypes);
+                directorField = AccessTools.Field(manager, "_playableDirector");
+                Type directorType = directorField == null ? null : directorField.FieldType;
+                stopMethod = directorType == null ? null : AccessTools.Method(directorType, "Stop", Type.EmptyTypes);
+                stateProperty = directorType == null ? null : AccessTools.Property(directorType, "state");
+                if (setDirector == null || stopMethod == null || stateProperty == null) throw new MissingMemberException("GameManager.SetDirector / PlayableDirector.Stop unavailable.");
+                harmony.Patch(setDirector, postfix: new HarmonyMethod(typeof(LevelEntryCompatibility), "TourStarted"));
+                Plugin.Trace("QVVR level tour skip available: independent VR, setting Comfort.SkipLevelTour.");
+            }
+            catch (Exception error)
+            {
+                directorField = null; stopMethod = null; stateProperty = null;
+                Plugin.Log.LogWarning("QVVR level tour skip unavailable; the original tour plays: " + error);
+            }
+        }
+
+        private static void TourStarted(UnityEngine.Object __instance)
+        {
+            LevelEntryCompatibility entry = active;
+            if (entry == null || entry.directorField == null) return;
+            Component director = entry.directorField.GetValue(__instance) as Component;
+            if (director == null) return;
+            // Let GameManager.Start finish first, then use the game's own skip:
+            // PlayableDirector.Stop raises stopped -> GameManager.OnEndDirector.
+            entry.renderer.StartCoroutine(entry.SkipTour(director));
+        }
+
+        private IEnumerator SkipTour(Component director)
+        {
+            yield return null;
+            if (renderer == null || director == null || !director.gameObject.activeInHierarchy) yield break;
+            if (!LevelEntryPolicy.SkipTour(renderer.ShortenLevelEntry, plugin.SkipLevelTour.Value, renderer.IsFirstLevelScene)) yield break;
+            if (Convert.ToInt32(stateProperty.GetValue(director, null)) != 1) yield break; // PlayState.Playing only.
+            stopMethod.Invoke(director, null);
+            Plugin.Trace("QVVR level tour skipped (independent VR); the level starts normally.");
+        }
+
         private static float ResolveDuration(float original)
         {
             LevelEntryCompatibility entry = active;
@@ -81,6 +136,7 @@ namespace QVVR
             if (active == this) active = null;
             if (harmony != null) harmony.UnpatchSelf();
             harmony = null; renderer = null; plugin = null;
+            directorField = null; stopMethod = null; stateProperty = null;
         }
     }
 }

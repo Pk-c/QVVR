@@ -247,11 +247,22 @@ try {
   $body=($renderer.Methods | Where-Object Name -eq $pair[0]).Body.Instructions
   if($body | Where-Object {$_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq $pair[1]}){throw "Removed diagnostic remains in hot path: $($pair -join '.')"}
  }
- # Periodic measurement lines are developer-only: a release config logs nothing.
- $log=($renderer.Methods | Where-Object Name -eq 'LogFrameTiming').Body.Instructions
- $first=$log | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference]} | Select-Object -First 1
- if(!$first -or $first.Operand.Name -ne 'diagnosticsEnabled'){throw 'Periodic logging must be gated by DiagnosticsEnabled/DetailedGpuTimings first.'}
- if(!($move | Where-Object {$_.OpCode.Name -eq 'ldc.r4' -and [float]$_.Operand -eq 30}) -or !($move | Where-Object {$_.OpCode.Name -eq 'ldc.r4' -and [float]$_.Operand -eq 5})){throw 'Normal and developer logging cadences must both remain available.'}
+ # Measurement logs, GPU phase markers, timers and their settings are compiled
+ # out of the Release package (QVVR_DIAGNOSTICS is defined for Debug builds only).
+ if($assembly.MainModule.Types | Where-Object Name -eq 'MainThreadWindow'){throw 'Release build must not contain the main-thread timing window.'}
+ foreach($name in @('LogFrameTiming','ProfileCommands')){if($renderer.Methods | Where-Object Name -eq $name){throw "Release build must compile out diagnostics: $name"}}
+ foreach($name in @('diagnosticsEnabled','detailedGpuTimings','mainThreadWindow','maximumMaintenanceMilliseconds','frameTiming')){if($renderer.Fields | Where-Object Name -eq $name){throw "Release build must compile out diagnostic state: $name"}}
+ $pluginType=$assembly.MainModule.Types | Where-Object Name -eq 'Plugin'
+ foreach($name in @('DiagnosticsEnabled','DetailedGpuTimings')){if($pluginType.Fields | Where-Object Name -eq $name){throw "Release build must not expose developer setting: $name"}}
+ foreach($type in $assembly.MainModule.Types){foreach($method in $type.Methods){if(!$method.HasBody){continue}
+  foreach($instruction in $method.Body.Instructions){
+   $call=$instruction.Operand -as [Mono.Cecil.MethodReference]
+   if($call -and (($call.Name -in @('ProfileMark','ProfileCommand','Trace') -and $call.DeclaringType.Name -in @('OpenVrRenderer','Plugin')) -or $call.DeclaringType.Name -eq 'Stopwatch' -or $call.Name -in @('QVVR_GetGpuTime','QVVR_GetGpuPhaseTime','QVVR_ReadXrPacing','QVVR_SetDetailedGpuTiming'))){
+    throw "Release build still calls developer diagnostics: $($type.Name).$($method.Name) -> $($call.DeclaringType.Name).$($call.Name)"
+   }
+  }
+ }}
+ if($move | Where-Object {$_.OpCode.Name -eq 'ldc.r4' -and [float]$_.Operand -eq 30}){throw 'Release maintenance must not schedule periodic log windows.'}
 } finally {$assembly.Dispose()}
 if($GameDir){
  $tmp=[Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $GameDir 'QV_Data/Managed/Unity.TextMeshPro.dll'))

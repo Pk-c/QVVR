@@ -84,8 +84,8 @@ the tester starts QV manually.
    transition into/out of levels, F7/F8 and unknown-scene fallback. Walk through
    the hub that opens costumes and return from costume/map selection: all three
    must stay stereo. Change gameplay HUD size/distance; these screens must share
-   those values, upright lagged follow and HUD capture cadence. Turn off stereo
-   menus to restore independent 2D menu panel settings and capture. Compare 2D/3D
+   those values and upright lagged follow; their UI captures at the 72 Hz menu
+   rate. Turn off stereo menus to restore independent 2D menu panel settings. Compare 2D/3D
    CPU/GPU samples at 72 Hz; sparse samples are not stable averages.
    The hub should appear closer without shifting costume/map framing; compare
    `VR.IntroHubDistanceScale=0.35` and `1`. Move the head: preserve stereo/IPD.
@@ -288,6 +288,7 @@ controlled comparison. `BlackCutSurfaces` remains the separate cap-effect switch
 the `black caps mode` log line shows the effective mode, the setting and the
 number of back-face eyes. Compare `Exact` and `BackFace` on the same level for
 cut-edge visuals and GPU total (reference heavy level: about 10 ms vs 6.6 ms).
+In a Debug build (`tools/build.ps1 -Configuration Debug`),
 `DetailedGpuTimings=false` is the default; enable it before a manual launch to
 log delayed per-pass GPU samples every five seconds. Keep it identical in A/B
 comparisons. Preserve eye resolution, HUD resolution/cadence, cylinder size,
@@ -501,8 +502,9 @@ animated materials, pause/options, new widgets and scene changes; suspension mus
 retain full capture cadence, never freeze text/fades. Summaries report suspension
 and continuous reason alongside capture/reuse counts. Compare maintenance elapsed
 time, separately reported log batch time, cadence p95/maximum and GPU samples.
-Enable `DiagnosticsEnabled=true` (manual restart) for Frame measurements; a
-release config writes no periodic logs. `DetailedGpuTimings=true` adds per-phase
+Measure with a Debug package (`tools/build.ps1 -Configuration Debug`, then deploy):
+enable `DiagnosticsEnabled=true` (manual restart). The Release package has these
+settings and their code compiled out and writes no periodic logs. `DetailedGpuTimings=true` adds per-phase
 GPU timestamps to the same five-second output. Test menu/cinema event hooks,
 late injection, paused/skipped movies and delayed camera activation with the idle
 one-second recovery fallback. Preserve original game files and deploy-only policy.

@@ -41,6 +41,27 @@ namespace QVVR {
             Assert(ComfortMath.ClampPitch(-90f) == -60f && ComfortMath.ClampPitch(90f) == 60f, "Tilt must stay within comfort bounds.");
             Assert(ComfortMath.ClampPitch(float.NaN) == 0f, "NaN tilt must not corrupt camera transforms.");
             Assert(System.Math.Abs(RenderBudget.NextCapture(0f, 0f, 72) - 1f / 72f) < 0.00001f, "Menus must support 72 Hz independently of the 36 Hz HUD.");
+            float menuInterval = 1f / 72f;
+            Assert(RenderBudget.CaptureDue(menuInterval - 0.0015f, menuInterval, 72), "A 72 Hz frame arriving 1.5 ms early must still capture.");
+            Assert(!RenderBudget.CaptureDue(0.5f * menuInterval, menuInterval, 72), "Captures never exceed the configured rate.");
+            Assert(RenderBudget.CaptureDue(2f * menuInterval - 0.0015f, interval, 36), "36 Hz HUD captures on a slightly early second 72 Hz frame.");
+            Assert(!RenderBudget.CaptureDue(menuInterval + 0.002f, interval, 36), "36 Hz HUD still skips the jittered intermediate 72 Hz frame.");
+            float deadline = 0f; int captured = 0; System.Random jitter = new System.Random(7);
+            for (int frame = 0; frame < 720; frame++)
+            {
+                float now = frame * menuInterval + (float)(jitter.NextDouble() - 0.5) * 0.002f;
+                if (!RenderBudget.CaptureDue(now, deadline, 72)) continue;
+                deadline = RenderBudget.NextCapture(now, deadline, 72); captured++;
+            }
+            Assert(captured >= 715, "72 Hz menu capture must not alias against +/-1 ms frame jitter: " + captured + "/720.");
+            deadline = 0f; captured = 0;
+            for (int frame = 0; frame < 720; frame++)
+            {
+                float now = frame * menuInterval + (float)(jitter.NextDouble() - 0.5) * 0.002f;
+                if (!RenderBudget.CaptureDue(now, deadline, 36)) continue;
+                deadline = RenderBudget.NextCapture(now, deadline, 36); captured++;
+            }
+            Assert(captured >= 355 && captured <= 361, "36 Hz HUD keeps a steady every-other-frame cadence: " + captured + "/720.");
             Assert(RenderBudget.UiScale(1.75f)==1.75f&&1920*RenderBudget.DefaultUiScale==3360&&1080*RenderBudget.DefaultUiScale==1890,"UI-only sharper target has exact expected dimensions.");
             Assert(RenderBudget.UiScale(float.NaN)==1.75f&&RenderBudget.UiScale(float.PositiveInfinity)==1.75f,"Invalid UI scale retains safe default.");
             Assert(RenderBudget.UiScale(0)==1&&RenderBudget.UiScale(10)==2,"UI resolution remains bounded.");
@@ -229,7 +250,7 @@ $checks = @{
     'IntroMenuCompatibility' = @('HubPosition', 'HideStageDim', 'RestoreStageDim')
     'HudLayoutMath' = @('Percent', 'Anchor')
     'LevelIntroPolicy' = @('Scene', 'Active')
-    'LevelEntryPolicy' = @('Duration')
+    'LevelEntryPolicy' = @('Duration', 'SkipTour')
     'LevelEntryCompatibility' = @('ResolveDuration')
     'FixedPanelAnchor' = @('Latch', 'Reset', 'get_Valid', 'get_Position', 'get_Rotation')
     'ControllerButtonPolicy' = @('Buttons', 'Trigger')
@@ -253,6 +274,8 @@ $checks['MenuScenePolicy'] += @('PauseDistance')
 $checks['MenuScenePolicy'] += @('RenderStereoMenu')
 $checks['OpenVrRenderer'] += @('get_IsSectorCinemaScene')
 $checks['RenderBudget'] += @('SceneScale', 'NextXrCap', 'NextRenderScale', 'NextMsaa')
+$checks['RenderBudget'] += @('CaptureDue')
+$checks['MenuScenePolicy'] += @('CaptureRate')
 $checks['OpenVrRenderer'] += @('TrackingEye')
 $checks['OpenVrRenderer'] += @('ProfileMark', 'ConfigureHudCommands')
 $checks['DioramaBounds'] += @('MayCut')

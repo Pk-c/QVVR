@@ -4,6 +4,19 @@
 
 namespace qvvr
 {
+#ifndef QVVR_DIAGNOSTICS
+// Release builds issue no timestamp queries; exports report "unavailable" (0).
+class GpuTiming
+{
+  public:
+    void ConfigureDetailed(bool) {}
+    void Mark(unsigned) {}
+    double Phase(unsigned) { return 0; }
+    void Begin(ID3D11Texture2D *) {}
+    void End() {}
+    double Latest() { return 0; }
+};
+#else
 // Nonblocking timestamp queries only; no texture readback or wait/flush.
 class GpuTiming
 {
@@ -107,4 +120,5 @@ class GpuTiming
         return milliseconds.load();
     }
 };
+#endif
 } // namespace qvvr

@@ -5,7 +5,14 @@ $root=Split-Path -Parent $PSScriptRoot
 $source=(Get-Content (Join-Path $root 'src/QVVR/LevelEntryCompatibility.cs') -Raw) -replace '(?m)^using .*;\r?\n',''
 # Actual policy/transpiler with API doubles. Execute its emitted IL, not Unity.
 $fixture=@'
-namespace UnityEngine { public class CanvasGroup {} public class OtherGroup {} }
+namespace UnityEngine {
+ public class CanvasGroup {} public class OtherGroup {}
+ public class Object {}
+ public class GameObject : Object {public bool activeInHierarchy=true;}
+ public class Component : Object {public GameObject gameObject=new GameObject();}
+}
+// PlayableDirector double: state 1 = Playing; Stop raises the game's stopped path.
+public class DirectorDouble : UnityEngine.Component {public int state{get;set;}=1;public int Stops;public void Stop(){Stops++;state=0;}}
 namespace DG.Tweening {
  public static class DOTweenModuleUI {
   public static float First,Last;public static int Calls;
@@ -17,23 +24,27 @@ namespace HarmonyLib {
  public class CodeInstruction {public OpCode opcode;public object operand;public CodeInstruction(OpCode code,object value=null){opcode=code;operand=value;}}
  public class HarmonyMethod {public HarmonyMethod(Type type,string name){}}
  public class Harmony {
-  public static int Patches,Unpatches;public static bool Fail;public static MethodInfo Target;
+  public static int Patches,Unpatches;public static bool Fail;public static MethodInfo Target;public static List<MethodInfo> Targets=new List<MethodInfo>();
   public Harmony(string id){}
-  public void Patch(MethodInfo original,HarmonyMethod transpiler){if(Fail)throw new InvalidOperationException("Fixture patch failure");Patches++;Target=original;}
+  public void Patch(MethodInfo original,HarmonyMethod transpiler=null,HarmonyMethod postfix=null){if(Fail)throw new InvalidOperationException("Fixture patch failure");Patches++;if(Target==null)Target=original;Targets.Add(original);}
   public void UnpatchSelf(){Unpatches++;}
  }
  public static class AccessTools {
   public static Type TypeByName(string name){return Assembly.GetExecutingAssembly().GetType(name);}
   public static MethodInfo DeclaredMethod(Type type,string name,Type[] args){return type.GetMethod(name,args);}
   public static MethodInfo Method(Type type,string name){return type.GetMethod(name,BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static|BindingFlags.Instance);}
+  public static MethodInfo Method(Type type,string name,Type[] args){return type.GetMethod(name,args);}
+  public static FieldInfo Field(Type type,string name){return type.GetField(name,BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Instance);}
+  public static PropertyInfo Property(Type type,string name){return type.GetProperty(name)??(PropertyInfo)null;}
  }
 }
-public class GameManager {public void GameStart(){}}
+public class GameManager : UnityEngine.Object {public void GameStart(){}public void SetDirector(){}DirectorDouble _playableDirector=new DirectorDouble();public DirectorDouble Director{get{return _playableDirector;}}}
 namespace QVVR {
  internal class ConfigDouble<T> {internal T Value;}
  internal class LogDouble {internal int Warnings;internal void LogInfo(string text){}internal void LogWarning(string text){Warnings++;}}
- internal class Plugin {internal const string Guid="test";internal static LogDouble Log=new LogDouble();internal ConfigDouble<float> LevelEntrySeconds=new ConfigDouble<float>{Value=1.5f};}
- internal class OpenVrRenderer {internal bool ShortenLevelEntry;}
+ internal class Plugin {internal const string Guid="test";internal static LogDouble Log=new LogDouble();internal static void Trace(string text){}internal ConfigDouble<float> LevelEntrySeconds=new ConfigDouble<float>{Value=1.5f};internal ConfigDouble<bool> SkipLevelTour=new ConfigDouble<bool>{Value=true};}
+ internal class OpenVrRenderer {internal bool ShortenLevelEntry,IsFirstLevelScene;internal IEnumerator Pending;internal object StartCoroutine(IEnumerator routine){Pending=routine;return null;}
+  internal void Frame(){if(Pending!=null&&!Pending.MoveNext())Pending=null;}}
  public static class LevelEntryTests {
   static int checks;
   static void Check(bool value,string message){checks++;if(!value)throw new Exception(message);}
@@ -68,7 +79,7 @@ namespace QVVR {
    foreach(var instruction in patched){
     var call=instruction.operand as MethodInfo;
     if(call!=null&&call.DeclaringType==typeof(LevelEntryCompatibility)){Check(call.Name=="ResolveDuration","Only duration helper inserted.");helpers++;}
-    else Check(Object.ReferenceEquals(instruction,original[cursor++]),"All original instructions/labels/callback sites retained in order.");
+    else Check(object.ReferenceEquals(instruction,original[cursor++]),"All original instructions/labels/callback sites retained in order.");
    }
    Check(helpers==2&&cursor==original.Count,"Both GameStart branches covered.");
    foreach(int count in new[]{0,1,3}){
@@ -80,7 +91,22 @@ namespace QVVR {
    Check(rejected,"Reject a same-name fade with another target type.");
    Run(patched);Check(DG.Tweening.DOTweenModuleUI.First==5.5f&&DG.Tweening.DOTweenModuleUI.Last==5.5f,"No renderer retains native duration.");
    var renderer=new OpenVrRenderer{ShortenLevelEntry=true};var settings=new Plugin();var compatibility=new LevelEntryCompatibility();compatibility.Initialize(renderer,settings);
-   Check(Harmony.Patches==1&&Harmony.Target.DeclaringType==typeof(GameManager)&&Harmony.Target.Name=="GameStart","Patch only GameManager.GameStart.");
+   Check(Harmony.Patches==2&&Harmony.Target.DeclaringType==typeof(GameManager)&&Harmony.Target.Name=="GameStart"&&Harmony.Targets[1].Name=="SetDirector","Patch GameManager.GameStart and SetDirector only.");
+   // Level tour: stopped one frame after SetDirector, via the game's own Stop path.
+   MethodInfo tour=typeof(LevelEntryCompatibility).GetMethod("TourStarted",BindingFlags.Static|BindingFlags.NonPublic);
+   var game=new GameManager();tour.Invoke(null,new object[]{game});
+   Check(game.Director.Stops==0&&renderer.Pending!=null,"Tour is never stopped inside GameManager.Start.");
+   renderer.Frame();renderer.Frame();Check(game.Director.Stops==1,"Tour stopped on the next frame.");
+   game=new GameManager();renderer.IsFirstLevelScene=true;tour.Invoke(null,new object[]{game});renderer.Frame();renderer.Frame();
+   Check(game.Director.Stops==0,"Level 1-1 story intro is kept.");renderer.IsFirstLevelScene=false;
+   game=new GameManager();settings.SkipLevelTour.Value=false;tour.Invoke(null,new object[]{game});renderer.Frame();renderer.Frame();
+   Check(game.Director.Stops==0,"Setting false plays the original tour.");settings.SkipLevelTour.Value=true;
+   game=new GameManager();renderer.ShortenLevelEntry=false;tour.Invoke(null,new object[]{game});renderer.Frame();renderer.Frame();
+   Check(game.Director.Stops==0,"Desktop/cinema keeps the tour.");renderer.ShortenLevelEntry=true;
+   game=new GameManager();tour.Invoke(null,new object[]{game});game.Director.state=0;renderer.Frame();renderer.Frame();
+   Check(game.Director.Stops==0,"A tour already ended or skipped is not stopped twice.");
+   game=new GameManager();tour.Invoke(null,new object[]{game});game.Director.gameObject.activeInHierarchy=false;renderer.Frame();renderer.Frame();
+   Check(game.Director.Stops==0,"A retry-deactivated director is left alone.");
    Run(patched);Check(DG.Tweening.DOTweenModuleUI.Calls==2&&DG.Tweening.DOTweenModuleUI.First==1.5f&&DG.Tweening.DOTweenModuleUI.Last==1.5f,"Emitted IL shortens both VR branches without skipping the fade.");
    renderer.ShortenLevelEntry=false;Run(patched);Check(DG.Tweening.DOTweenModuleUI.First==5.5f,"Desktop/cinema guard evaluated at entry, not baked into patch.");
    renderer.ShortenLevelEntry=true;settings.LevelEntrySeconds.Value=3f;Run(patched);Check(DG.Tweening.DOTweenModuleUI.First==3f,"Live setting used at next GameStart.");
@@ -97,7 +123,7 @@ namespace QVVR {
  }
 }
 '@
-$usings="using System;using System.Collections.Generic;using System.Reflection;using System.Reflection.Emit;using HarmonyLib;`n"
+$usings="using System;using System.Collections;using System.Collections.Generic;using System.Reflection;using System.Reflection.Emit;using HarmonyLib;using UnityEngine;`n"
 Add-Type -TypeDefinition ($usings+$fixture+$source)
 $count=[QVVR.LevelEntryTests]::Run()
 Add-Type -Path (Join-Path $root '.deps/bepinex-5.4.23.5/BepInEx/core/Mono.Cecil.dll')
@@ -131,7 +157,14 @@ if($GameDir){
     if(!($callback.Body.Instructions | Where-Object {$_.Operand -is [Mono.Cecil.FieldReference] -and $_.Operand.Name -eq $field})){throw "Missing original entry callback action: $name / $field"}
    }
   }
+  # Level tour skip relies on: SetDirector plays the director, and its stopped
+  # event (raised by PlayableDirector.Stop, as the game's SkipManager does)
+  # runs OnEndDirector, which starts the level.
+  if(!($manager.Methods | Where-Object {$_.Name -eq 'SetDirector' -and $_.Parameters.Count -eq 0})){throw 'Installed GameManager.SetDirector() missing.'}
+  $register=($manager.Methods | Where-Object Name -eq 'RegisterEvent').Body.Instructions
+  $wired=$register | Where-Object {$_.OpCode.Name -eq 'ldftn' -and $_.Operand.Name -eq 'OnEndDirector' -and $_.Next.Next.Operand -is [Mono.Cecil.MethodReference] -and $_.Next.Next.Operand.Name -eq 'add_stopped'}
+  if(!$wired){throw 'Installed director stopped event no longer runs GameManager.OnEndDirector.'}
  }finally{$game.Dispose()}
- Write-Host 'Installed QV GameStart fade branches and original dialog/control callbacks verified read-only.'
+ Write-Host 'Installed QV GameStart fade branches, original dialog/control callbacks and director stop -> OnEndDirector wiring verified read-only.'
 }
 Write-Host "Level entry: $count production policy/transpiler assertions plus emitted-IL execution and compiled lifecycle/guard checks passed. Not Unity/Frame timing validation."

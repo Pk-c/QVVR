@@ -17,6 +17,10 @@ namespace QVVR
 
         internal static ManualLogSource Log;
 
+        // Developer log line. Release builds compile out the call and its message.
+        [System.Diagnostics.Conditional("QVVR_DIAGNOSTICS")]
+        internal static void Trace(string message) { Log.LogInfo(message); }
+
         internal ConfigEntry<bool> VrEnabled;
         internal ConfigEntry<bool> StereoSelectionMenus;
         internal ConfigEntry<float> IntroHubDistanceScale;
@@ -42,6 +46,7 @@ namespace QVVR
         internal ConfigEntry<float> PanelFollowLag;
         internal ConfigEntry<bool> CenterDialogs;
         internal ConfigEntry<float> LevelEntrySeconds;
+        internal ConfigEntry<bool> SkipLevelTour;
         internal ConfigEntry<float> GameplayHudScale;
         internal ConfigEntry<float> GameplayHudDistance;
         internal ConfigEntry<float> HubPauseDistance, XrResolutionCap;
@@ -66,8 +71,11 @@ namespace QVVR
         internal ConfigEntry<bool> DisableVSync;
         internal ConfigEntry<bool> CompositorFramePacing;
         internal ConfigEntry<bool> DisableRealtimeShadows;
-        internal ConfigEntry<bool> CullOutsideDiorama, AdaptiveUiCapture, DirectHudOverlay, DetailedGpuTimings, PostSubmitMaintenance, LiveCapBounds;
-        internal ConfigEntry<bool> LightweightUiMaintenance, DiagnosticsEnabled;
+        internal ConfigEntry<bool> CullOutsideDiorama, AdaptiveUiCapture, DirectHudOverlay, PostSubmitMaintenance, LiveCapBounds;
+        internal ConfigEntry<bool> LightweightUiMaintenance;
+#if QVVR_DIAGNOSTICS
+        internal ConfigEntry<bool> DiagnosticsEnabled, DetailedGpuTimings;
+#endif
         internal ConfigEntry<bool> WaterFoamFix;
         internal ConfigEntry<int> UiCaptureRate;
         internal ConfigEntry<int> MenuCaptureRate;
@@ -161,6 +169,8 @@ namespace QVVR
                 "Only the costume-access hub pause/options/achievements overlay distance, 0.6-3 m. Independent of game HUD, map/costume screens and the VR settings panel. Config-only setting.");
             CenterDialogs = Config.Bind("Comfort", "CenterDialogs", true,
                 "Center QV dialogue boxes in the viewer-following VR HUD instead of projecting them beside game actors. Capture-only: preserves desktop and fixed flat cinematics, portraits, text and animations. No additional render pass.");
+            SkipLevelTour = Config.Bind("Comfort", "SkipLevelTour", true,
+                "Skip the camera tour some levels play before gameplay, in independent VR only (it cannot be followed from the VR view). Uses the game's own skip; the level then starts normally. Level 1-1's story intro is kept on its flat screen. False plays the original tour.");
             LevelEntrySeconds = Config.Bind("Comfort", "LevelEntrySeconds", 1.5f,
                 "Standard level-entry fade before dialogue/controls in independent diorama VR, range 1.5-5.5 seconds. Default 1.5 retains the game's internal camera-focus duration; 5.5 restores original timing. Does not skip story cinematics or change desktop timing. Applies when GameStart next runs, not to a transition already playing.");
             EyeMsaaSamples = Config.Bind("VR", "EyeMsaaSamples", 2,
@@ -270,18 +280,20 @@ namespace QVVR
                 "Reuse unchanged full-resolution HUD captures. Dirty graphics, transforms, CanvasGroups, animation and custom materials retain updates at the configured capture rate. Live A/B switch.");
             LightweightUiMaintenance = Config.Bind("Performance", "LightweightUiMaintenance", true,
                 "Retain unchanged UI dirty subscriptions across scans. For continuously animated/unknown UI, use normal full-rate capture without snapshot tracking and retry caching every 2 seconds. False restores full cache rebuilds for A/B testing.");
+#if QVVR_DIAGNOSTICS
             DiagnosticsEnabled = Config.Bind("Performance", "DiagnosticsEnabled", false,
-                "Developer measurements: 5-second logs of XR cadence, CPU/GPU frame times, cylinder coverage, cut-surface and HUD layer state. False (release) writes no periodic log lines. Requires manual relaunch.");
+                "Developer build only: 5-second logs of XR cadence, CPU/GPU frame times, cylinder coverage, cut-surface and HUD layer state. Requires manual relaunch.");
+            DetailedGpuTimings = Config.Bind("Performance", "DetailedGpuTimings", false,
+                "Developer build only: nonblocking GPU timestamps for UI, world eyes, depth, HUD and XR copy; log every 5 seconds. Requires restart. No eye texture readback.");
+#endif
             DirectHudOverlay = Config.Bind("Performance", "DirectHudOverlay", true,
                 "Draw the ordinary captured HUD quad at the end of each world camera instead of rendering another camera. Settings canvas and flat scenes keep the validated camera path. Live A/B switch.");
-            DetailedGpuTimings = Config.Bind("Performance", "DetailedGpuTimings", false,
-                "Enable nonblocking GPU timestamps for UI, world eyes, depth, HUD and XR copy; log every 5 seconds. Diagnostic overhead; requires restart. No eye texture readback.");
             PostSubmitMaintenance = Config.Bind("Performance", "PostSubmitMaintenance", true,
                 "Move cold UI/scene scans and diagnostics after stereo enqueue, outside the fresh-pose-to-eye path. Disable for a controlled scheduling comparison; no head-pose smoothing.");
             UiCaptureRate = Config.Bind("Performance", "UiCaptureRate", 36,
-                "Maximum GPU capture refresh for gameplay and stereo intro HUD; HMD/eye tracking remains compositor-paced.");
+                "Maximum GPU capture refresh for the gameplay HUD; HMD/eye tracking remains compositor-paced.");
             MenuCaptureRate = Config.Bind("Performance", "MenuCaptureRate", 72,
-                "Maximum GPU capture refresh for captured 2D scenes and their UI; separate from gameplay/stereo intro HUD capture.");
+                "Maximum GPU capture refresh for menus: captured 2D scenes and the stereo hub/costume/map screen UI; separate from gameplay HUD capture.");
             UiTextureScale = Config.Bind("VR", "UiTextureScale", RenderBudget.DefaultUiScale,
                 "UI-only supersampling relative to 1920x1080, default 1.75 (3360x1890), range 1-2. GPU mipmaps/trilinear filtering retained; world/eye resolution and capture cadence unchanged. Set 1.5 for rollback after migration. Requires manual relaunch.");
             uiQualityRevision = Config.Bind("VR", "UiQualityRevision", 0,

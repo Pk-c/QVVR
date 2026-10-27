@@ -1,3 +1,5 @@
+#if QVVR_DIAGNOSTICS
+// Developer builds only: feeds the periodic main-thread timing log.
 namespace QVVR
 {
     // Per-log-window main-thread timings (wall-clock ms). Value type, updated in
@@ -39,3 +41,4 @@ namespace QVVR
         private static bool Valid(double value) { return value >= 0 && value < 10000; }
     }
 }
+#endif

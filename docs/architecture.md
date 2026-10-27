@@ -462,7 +462,7 @@ Other Graphic types retain normal capture cadence. Discovery errors trip a sessi
 and fall back to uncached captures without interrupting scene/controller
 maintenance. Disabling AdaptiveUiCapture bypasses discovery as well as reuse.
 
-`DetailedGpuTimings` optionally adds eight pairs of timestamp queries to the
+In Debug builds, `DetailedGpuTimings` optionally adds eight pairs of timestamp queries to the
 existing eight-slot nonblocking query ring: UI, left/right world, left/right HUD,
 XR copy span, and left/right depth. Missing passes report zero. Depth is part of
 world, not an additive budget; spans can contain submission gaps and are delayed
@@ -522,8 +522,12 @@ subscriptions. Dialogue discovery, layer isolation and HUD inset maintenance
 continue on the existing schedule; they are not contingent on cache success.
 
 Release builds carry no investigation-only instrumentation: no shader or
-constant-buffer capture, no staging buffers, no per-draw timers and no periodic
-log lines. `DiagnosticsEnabled` (latched at startup) enables five-second
+constant-buffer capture, no staging buffers, no per-draw timers, no GPU timestamp
+queries, no XR cadence counters and no periodic log lines. Developer logging is
+compiled in only with `QVVR_DIAGNOSTICS`, defined by Debug builds (managed
+`DefineConstants`, native `/DQVVR_DIAGNOSTICS`); `Plugin.Trace` lines and
+`ProfileMark` calls are `[Conditional]`, so Release drops their arguments too.
+In a Debug build, `DiagnosticsEnabled` (latched at startup) enables five-second
 measurement logs: XR cadence, main-thread/enqueue CPU, delayed GPU frame time,
 cylinder coverage and cut-surface/HUD layer state. `DetailedGpuTimings` adds the
 nonblocking per-phase GPU timestamps. Neither changes the rendered image.

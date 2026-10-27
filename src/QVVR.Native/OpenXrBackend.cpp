@@ -945,7 +945,11 @@ bool SubmitOpenXrFrame(ID3D11Texture2D *left, ID3D11Texture2D *right, const vr::
     end.layerCount = copied ? (hudVisible ? 2 : 1) : 0;
     end.layers = copied ? layers : nullptr;
     bool ended = Check(xrEndFrame(session, &end));
+#ifdef QVVR_DIAGNOSTICS
     if (ended && copied) pacingStats.Record(SteadyMilliseconds(), framePreparedMs, copyStarted, framePeriodMs, frameFocused);
+#else
+    (void)copyStarted; // Cadence statistics are developer-build only.
+#endif
     // Release the snapshot only AFTER the runtime consumes these exact views.
     frameBegun.store(false, std::memory_order_release);
     if (!ended || (shouldRender && !copied))

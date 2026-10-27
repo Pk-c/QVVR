@@ -52,7 +52,7 @@ New-Item -ItemType Directory -Force -Path $nativeOutput, $nativeObjects | Out-Nu
 $nativeDll = Join-Path $nativeOutput 'QVVR.Native.dll'
 $nativeObject = Join-Path $nativeObjects 'QVVR.Native.obj'
 $nativeCpp = Join-Path $nativeSource 'QVVR.Native.cpp'
-$nativeOptimize = if ($Configuration -eq 'Release') { '/O2 /MT' } else { '/Od /MTd /Zi' }
+$nativeOptimize = if ($Configuration -eq 'Release') { '/O2 /MT' } else { '/Od /MTd /Zi /DQVVR_DIAGNOSTICS' }
 $nativeCommand = 'call "{0}" -no_logo -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++17 /EHsc /W4 {1} /LD /I"{2}" /I"{7}\.deps\directx-headers" /I"{7}\.deps\openxr\sdk\include" /Fo"{8}\\" /Fe:"{4}" "{5}" "{9}" "{10}" /link /LIBPATH:"{6}" openvr_api.lib d3d11.lib d3dcompiler.lib advapi32.lib shell32.lib ole32.lib "{7}\.deps\openxr\sdk\native\x64\lib\openxr_loader.lib"' -f `
     $vsDevCmd, `
     $nativeOptimize, `

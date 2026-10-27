@@ -257,6 +257,12 @@ their original completion callbacks still start dialogue/tutorials and movement.
 Story cinematics, desktop and non-independent VR retain their original timing.
 Changes apply at the next entry, not to an already-running transition.
 
+Some levels open with a camera tour of the level (a Timeline) that cannot be
+followed from the independent VR view. `Comfort.SkipLevelTour=true` (default)
+stops it one frame after it starts, through the same `PlayableDirector.Stop`
+path as the game's own skip, so the level starts normally. Level 1-1's story
+intro stays on its flat screen; desktop and non-independent VR keep the tour.
+
 Two-hand translation defaults to **1.15x**, rotation to **1.10x**; head tracking
 and separation-based resize are unchanged. `Controls.DioramaMoveSensitivity`
 and `Controls.DioramaRotationSensitivity` allow 0.25-3x, sampled at grab start.
@@ -283,8 +289,9 @@ directly in stereo. Title/loading/other states retain 2D capture. Selections use
 QV's scripted camera plus VR head tracking, not saved gameplay placement/size,
 cylinder clipping, grips, or passthrough. Camera-space map labels are captured
 alongside overlay UI. The hub leading to costumes is also stereo. These screens
-share the gameplay HUD size, physical distance and capture rate, with upright
-lagged follow and GPU-filtered UI textures. Turn the option off to recover the
+share the gameplay HUD size and physical distance, with upright lagged follow
+and GPU-filtered UI textures; their UI refreshes at the 72 Hz menu capture rate
+(`Performance.MenuCaptureRate`), not the 36 Hz gameplay HUD rate. Turn the option off to recover the
 old flat presentation and its independent menu UI settings.
 **HUD center inset** moves root UI layout anchors inward by 29% per edge by
 default (0-45%, live). Staying below 50% avoids collapsed/inverted panels.
@@ -444,10 +451,15 @@ capture temporarily drops snapshot/subscription tracking and retries caching eve
 two seconds; capture rate, mipmaps and text resolution stay unchanged. Set false
 for the previous full-tracking A/B path.
 
-Release configs write no periodic log lines (startup state, warnings and errors
-only). `Performance.DiagnosticsEnabled=true` enables five-second measurement logs
-on the next manual launch: XR submission cadence, main-thread and enqueue CPU,
-delayed GPU frame time, cylinder coverage, cut-surface and HUD layer state.
+The release package contains no measurement code: periodic logs, GPU timestamp
+queries, XR cadence counters and their settings are compiled out, and the log holds
+only a few startup lines (version, renderer, compositor) plus warnings and errors.
+For Frame measurements, build a developer package with
+`.\tools\build.ps1 -Configuration Debug` (marked `"diagnostics": true` in
+`qvvr-package.json`) and deploy it the same way. There,
+`Performance.DiagnosticsEnabled=true` enables five-second measurement logs on the
+next manual launch: XR submission cadence, main-thread and enqueue CPU, delayed GPU
+frame time, UI scan counts, cylinder coverage, cut-surface and HUD layer state.
 `DetailedGpuTimings=true` adds per-phase GPU timestamps (UI, eyes, depth, copy).
 Maintenance and logging wall-clock durations are reported separately. Event hooks
 still handle menu/cinema transitions immediately; idle recovery polling is once

@@ -12,6 +12,13 @@ namespace QVVR
         // Full-scene menus use the same readable, upright HUD as gameplay.
         // Captured 2D recovery/title panels retain their original menu settings.
         internal static bool UseGameplayHud(bool gameplay, bool stereoMenu) { return gameplay || stereoMenu; }
+        // Stereo selection screens keep the gameplay HUD size and distance, but
+        // their cursor and camera-space map labels refresh at the menu rate.
+        internal static int CaptureRate(bool gameplay, int hudRate, int menuRate)
+        {
+            int rate = gameplay ? hudRate : menuRate;
+            return rate < 1 ? 1 : rate > 72 ? 72 : rate;
+        }
         internal static bool RenderStereoMenu(bool stereoMenu, bool cinema) { return stereoMenu && !cinema; }
         internal static float HubHudScale(bool stereoMenu, IntroPresentation state, float normal)
         { return stereoMenu && state == IntroPresentation.World ? 4f : normal; }
