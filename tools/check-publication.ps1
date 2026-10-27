@@ -16,7 +16,7 @@ $qvAllowed = @(
     '^src/QVVR\.Native/CMakeLists\.txt$',
     '^tools/[A-Za-z0-9_-]+\.(ps1|py|cpp)$',
     '^tools/performance-fixture\.cs$',
-    '^package-assets/(README\.txt|RELEASE-NOTES\.txt|QVVR-THIRD-PARTY-NOTICES\.txt|qvvr-launch-options\.txt|dev\.qvvr\.prototype\.cfg|uninstall\.(bat|ps1)|QVVR-Frame-Setup\.(bat|ps1|txt)|QVVR-Frame-Defaults\.cfg|RELEASE-README\.txt)$'
+    '^package-assets/(README\.txt|RELEASE-NOTES\.txt|QVVR-THIRD-PARTY-NOTICES\.txt|qvvr-launch-options\.txt|dev\.qvvr\.prototype\.cfg|uninstall\.(bat|ps1)|QVVR-Frame-Setup\.(ps1|txt)|Install-QVVR-on-Frame\.bat|Uninstall-QVVR-from-Frame\.bat|QVVR-Frame-Defaults\.cfg|RELEASE-README\.txt)$'
 )
 $qvChecks = [ordered]@{
     'private home path' = '(?i)(?:[a-z]:[\\/]Users[\\/](?!Public\b)[^\\/\s]+|[/]home[/](?!steamos(?:[/]|\b))[^/\s]+)'

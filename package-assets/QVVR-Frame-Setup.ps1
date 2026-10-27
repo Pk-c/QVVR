@@ -27,7 +27,8 @@ function Get-QvvrInstallFiles {
 # Release ZIP = PC/<overlay> + these files. Only PC/ content is ever uploaded.
 function Get-QvvrReleaseExtraNames {
     'README.txt'
-    foreach ($name in @('QVVR-Frame-Setup.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt','QVVR-Frame-Defaults.cfg')) { "SteamFrame/$name" }
+    foreach ($name in @('Install-QVVR-on-Frame.bat','Uninstall-QVVR-from-Frame.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt','QVVR-Frame-Defaults.cfg')) { "SteamFrame/$name" }
+    foreach ($name in @('adb.exe','AdbWinApi.dll','AdbWinUsbApi.dll','NOTICE.txt')) { "SteamFrame/platform-tools/$name" }
 }
 
 # Steam Frame reference settings, shipped beside this script. Uploaded with an
@@ -162,13 +163,46 @@ function Find-QvvrAdb([string]$Requested) {
     foreach ($candidate in $candidates) { if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).ProviderPath } }
     $command=Get-Command adb -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
-    throw 'ADB not found. Extract official Android SDK Platform Tools beside this script (platform-tools/adb.exe), or supply -AdbPath.'
+    throw 'The bundled ADB (SteamFrame/platform-tools/adb.exe) is missing. Extract the WHOLE release ZIP again, keeping the SteamFrame folder intact.'
 }
 
 function Invoke-QvvrAdb([string[]]$Arguments) {
     $output=@(& $script:qvvrAdb @script:qvvrTarget @Arguments)
-    if ($LASTEXITCODE -ne 0) { throw "ADB failed ($LASTEXITCODE). Check USB authorization and the device connection." }
+    if ($LASTEXITCODE -ne 0) {
+        # The Frame helper reports its reason as the last line (stderr merged).
+        $last=@($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) | Select-Object -Last 1
+        if ($last) { throw "$last" }
+        throw "ADB failed ($LASTEXITCODE). Check the USB cable and that this PC is authorized in the headset."
+    }
     return $output
+}
+
+# First connection: the headset shows an "Allow USB debugging" prompt. Wait for
+# it instead of failing, telling the user exactly what is still missing.
+function Wait-QvvrAuthorizedDevice([int]$Seconds=120) {
+    $deadline=(Get-Date).AddSeconds($Seconds); $shown=''
+    while ($true) {
+        $lines=@(Invoke-QvvrAdb @('devices') | Where-Object { $_ -match '^\S+\s+(device|unauthorized|offline|authorizing|connecting)\s*$' })
+        $ready=@($lines | Where-Object { $_ -match '\sdevice\s*$' } | ForEach-Object { ($_ -split '\s+')[0] })
+        if ($ready.Count -gt 0) { return $ready }
+        $state=if ($lines | Where-Object { $_ -match '\s(unauthorized|authorizing)\s*$' }) { 'unauthorized' } elseif ($lines.Count) { 'offline' } else { 'none' }
+        if ((Get-Date) -gt $deadline) {
+            switch ($state) {
+                'unauthorized' { throw 'The Frame did not authorize this PC. Accept the "Allow USB debugging" prompt in the headset, then run the installer again.' }
+                'offline' { throw 'The Frame is connected but not responding. Unplug and reconnect the USB cable, then run the installer again.' }
+                default { throw 'No Steam Frame found over USB. Check the cable, that the headset is on, and that USB debugging is enabled in the Frame developer settings.' }
+            }
+        }
+        if ($state -ne $shown) {
+            $shown=$state
+            switch ($state) {
+                'unauthorized' { Write-Host 'Put on the headset and accept the "Allow USB debugging" prompt (tick "Always allow from this computer")...' -ForegroundColor Yellow }
+                'offline' { Write-Host 'The Frame is connecting...' -ForegroundColor Yellow }
+                default { Write-Host 'Waiting for the Steam Frame: connect it by USB, turn it on and enable USB debugging in its developer settings...' -ForegroundColor Yellow }
+            }
+        }
+        Start-Sleep -Seconds 2
+    }
 }
 
 # Adds the required loader override/graphics API to existing options instead of
@@ -329,7 +363,7 @@ function Update-QvvrFrameLaunchOptions {
             if (!$plan.Changed -and !$plan.Conflict) { Write-Host "Steam launch options already set (saved Steam config): $saved"; return $true }
         }
         Write-Warning "Steam launch options were not changed: $reason"
-        Write-Warning 'Keep Steam open, enable CEF Remote Debugging in the Frame developer settings, then run menu option 4 (or -Action LaunchOptions).'
+        Write-Warning 'Keep Steam open, enable CEF Remote Debugging in the Frame developer settings, then run Install-QVVR-on-Frame.bat again (or -Action LaunchOptions).'
         Write-Warning $manual
         return $false
     }
@@ -490,8 +524,7 @@ function Invoke-QvvrFrameSetup {
         # Steam Frame's USB bridge is more reliable with the legacy ADB transport.
         $env:ADB_USB_LEGACY='1'
         if (!$Serial) {
-            $devices=@(Invoke-QvvrAdb @('devices') | Where-Object { $_ -match '^\S+\s+device\s*$' } | ForEach-Object { ($_ -split '\s+')[0] })
-            if ($devices.Count -eq 0) { throw 'No authorized device. Enable Frame Developer Mode/USB debugging, connect USB and authorize this PC in the headset.' }
+            $devices=@(Wait-QvvrAuthorizedDevice)
             if ($devices.Count -eq 1) { $Serial=$devices[0] }
             else { throw 'Multiple ADB devices found. Re-run with -Serial for your Frame; no device was modified.' }
         }
@@ -503,6 +536,7 @@ function Invoke-QvvrFrameSetup {
             if (!$PSCmdlet.ShouldProcess('Steam on Frame: QV (app 1494110)','Set QVVR launch options')) { return }
             if (!(Update-QvvrFrameLaunchOptions)) { throw 'Steam launch options were not applied.' }
             Write-Host 'Done. Start QV yourself when ready.'
+            $script:QvvrOutcome='LaunchOptions'
             return
         }
         if (!$PSCmdlet.ShouldProcess("Steam Frame: $RemoteGameDir",$Action+' QVVR (with recoverable backup)')) { return }
@@ -517,18 +551,19 @@ function Invoke-QvvrFrameSetup {
         Invoke-QvvrAdb @('shell',"umask 077; mkdir '$remote'") | Out-Host
         Invoke-QvvrAdb @('push',$helper,"$remote/manage.sh") | Out-Host
         $remove=if ($RemoveConfig) {'1'} else {'0'}
-        Invoke-QvvrAdb @('shell',"sh '$remote/manage.sh' Check '$RemoteGameDir' '$remote' '$remove'") | Out-Host
+        Invoke-QvvrAdb @('shell',"sh '$remote/manage.sh' Check '$RemoteGameDir' '$remote' '$remove' 2>&1") | Out-Host
         if ($Action -eq 'Install') {
             Invoke-QvvrAdb @('push',$upload,"$remote/package.zip") | Out-Host
             $defaults=Get-QvvrFrameDefaults
             if ($defaults) { Invoke-QvvrAdb @('push',$defaults,"$remote/frame-defaults.cfg") | Out-Host }
         }
-        Invoke-QvvrAdb @('shell',"sh '$remote/manage.sh' '$Action' '$RemoteGameDir' '$remote' '$remove'") | Out-Host
+        Invoke-QvvrAdb @('shell',"sh '$remote/manage.sh' '$Action' '$RemoteGameDir' '$remote' '$remove' 2>&1") | Out-Host
         if ($Action -eq 'Install') {
+            $script:QvvrOutcome='Installed'
             if ($SkipLaunchOptions) { Write-Host "Steam launch options skipped. Required: $script:QvvrRequiredLaunchOptions" }
-            else { Update-QvvrFrameLaunchOptions | Out-Null }
+            else { $script:QvvrLaunchOptionsReady=(@(Update-QvvrFrameLaunchOptions) | Select-Object -Last 1) -eq $true }
         }
-        else { Write-Host 'QVVR is removed; shared loader remains. QVVR-specific Steam launch options can be removed manually.' }
+        else { $script:QvvrOutcome='Uninstalled'; Write-Host 'QVVR is removed; shared loader remains. QVVR-specific Steam launch options can be removed manually.' }
         Write-Host 'Done. Start QV yourself when ready.'
     } finally {
         # Only this session's exact /tmp file, never recursive remote deletion.
@@ -537,11 +572,66 @@ function Invoke-QvvrFrameSetup {
         }
         if ($upload) { Remove-Item -LiteralPath $upload -Force -ErrorAction SilentlyContinue -WhatIf:$false }
         if ($local -and (Test-Path -LiteralPath (Join-Path $local 'manage.sh'))) { Write-Host "Local helper retained for diagnostics: $local" }
+        # Stop the bundled ADB server so the extracted release folder is not left locked.
+        if ($script:qvvrAdb -and $script:qvvrAdb.StartsWith($PSScriptRoot,[StringComparison]::OrdinalIgnoreCase)) {
+            try { & $script:qvvrAdb kill-server *> $null } catch { }
+        }
         $env:ADB_USB_LEGACY=$previousLegacy
     }
 }
 
+# Final screen for the double-click launchers: one unmistakable result line,
+# the reason on failure, and the single next step.
+function Write-QvvrResult([string]$Action,[string]$Failure) {
+    $line='=' * 64
+    $verb=if ($Action -eq 'Uninstall') { 'uninstalled from' } else { 'installed on' }
+    Write-Host ''
+    if ($Failure) {
+        Write-Host $line -ForegroundColor Red
+        Write-Host "  FAILED - QVVR was not $verb your Steam Frame" -ForegroundColor Red
+        Write-Host $line -ForegroundColor Red
+        Write-Host "  Reason: $Failure"
+        $next=if ($Failure -match 'QV is running') { 'Close QV on the Frame, then run this again.' }
+            elseif ($Failure -match 'Extract|PC folder|release ZIP|Incomplete|Unexpected|checksum') { 'Download the release again and extract the WHOLE ZIP, then run this again.' }
+            elseif ($Failure -match 'USB|authorize|Frame found|not responding|ADB|device') { 'Fix the USB connection as described, then run this again.' }
+            else { 'Run this again. If it keeps failing, share this window when reporting the issue.' }
+        Write-Host "  Next:   $next"
+        Write-Host '  Any game files already replaced were backed up in the game''s .qvvr-backups folder.'
+        return
+    }
+    if ($script:QvvrOutcome -eq 'Installed' -and $script:QvvrLaunchOptionsReady -eq $false) {
+        Write-Host $line -ForegroundColor Yellow
+        Write-Host '  INSTALLED - one manual step left' -ForegroundColor Yellow
+        Write-Host $line -ForegroundColor Yellow
+        Write-Host '  QVVR is installed and verified, but the Steam launch options could not be set.'
+        Write-Host '  On the Frame: Steam > QV > Properties > Launch options, enter:'
+        Write-Host "    $script:QvvrRequiredLaunchOptions"
+        return
+    }
+    Write-Host $line -ForegroundColor Green
+    switch ($script:QvvrOutcome) {
+        'Installed' {
+            Write-Host '  SUCCESS - QVVR is installed on your Steam Frame' -ForegroundColor Green
+            Write-Host $line -ForegroundColor Green
+            Write-Host '  Settings and other mods were kept; replaced files are backed up in .qvvr-backups.'
+            Write-Host '  Next: start QV on the Frame.'
+        }
+        'Uninstalled' {
+            Write-Host '  SUCCESS - QVVR was removed from your Steam Frame' -ForegroundColor Green
+            Write-Host $line -ForegroundColor Green
+            Write-Host '  A recoverable copy is in the game''s .qvvr-backups folder.'
+            Write-Host "  Optional: remove these Steam launch options for QV: $script:QvvrRequiredLaunchOptions"
+        }
+        default {
+            Write-Host '  SUCCESS - Steam launch options set for QV' -ForegroundColor Green
+            Write-Host $line -ForegroundColor Green
+        }
+    }
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
+    $script:QvvrOutcome=$null; $script:QvvrLaunchOptionsReady=$null
     try { Invoke-QvvrFrameSetup -Action $Action -PackagePath $PackagePath -AdbPath $AdbPath -Serial $Serial -RemoteGameDir $RemoteGameDir -RemoveConfig:$RemoveConfig -SkipLaunchOptions:$SkipLaunchOptions -WhatIf:$WhatIfPreference }
-    catch { Write-Error $_; exit 1 }
+    catch { Write-QvvrResult $Action $_.Exception.Message; exit 1 }
+    if ($script:QvvrOutcome) { Write-QvvrResult $Action '' }
 }

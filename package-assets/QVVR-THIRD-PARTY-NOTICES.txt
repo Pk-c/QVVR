@@ -47,6 +47,14 @@ License: BSD 3-Clause License
 https://github.com/ValveSoftware/openvr
 License text: BepInEx/plugins/QVVR/licenses/OpenVR.txt
 
+Android SDK Platform Tools r37.0.1: adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll
+(unmodified official binaries, only in the release ZIP's SteamFrame/platform-tools
+folder for the USB installer; never copied into the game or onto the headset)
+Copyright The Android Open Source Project
+License: Apache License 2.0 (ADB source: https://android.googlesource.com/platform/packages/modules/adb)
+https://developer.android.com/tools/releases/platform-tools
+Notices: SteamFrame/platform-tools/NOTICE.txt
+
 QVVR does not distribute QV game assemblies or assets.
 
 OpenXR SDK loader 1.1.47 (private DLL; NuGet OpenXR package)

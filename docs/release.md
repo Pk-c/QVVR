@@ -45,8 +45,10 @@ exact tagged source build; rebuild from the chosen clean commit before publishin
 
 The Frame USB installer ships in the same ZIP under `SteamFrame/`, outside the
 game overlay; it rebuilds and validates the exact overlay from `PC/` before upload.
-`PC/` includes uninstall.bat/uninstall.ps1 for local PC removal. Frame tooling
-requires the user's official ADB Platform Tools; no ADB executable is redistributed.
+`PC/` includes uninstall.bat/uninstall.ps1 for local PC removal. The Frame tools
+bundle unmodified official ADB (Android SDK Platform Tools r37.0.1: adb.exe,
+AdbWinApi.dll, AdbWinUsbApi.dll, NOTICE.txt) under `SteamFrame/platform-tools/`,
+pinned by SHA-256 in `tools/setup-release-deps.ps1`; it is never uploaded.
 Run installer fixtures on Windows PowerShell 5.1 and PowerShell 7, including the
 Git Bash POSIX fixture. Device USB acceptance (install/update/remove/reinstall,
 custom config preservation, backups, game-open refusal and disconnect recovery)

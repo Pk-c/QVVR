@@ -200,5 +200,31 @@ Assert-Installer ($script:trace.Count -eq 1) 'Ambiguous-device check should only
 $script:trace.Clear()
 Assert-Rejected {Invoke-QvvrFrameSetup -Action Uninstall -RemoteGameDir '/home/steamos/../other'} 'Remote traversal must refuse.'
 Assert-Installer ($script:trace.Count -eq 0) 'Unsafe remote path must be rejected before contacting ADB.'
+# First connection: wait for the headset's USB-debugging prompt, then report
+# precisely what is missing when it never arrives. No real sleeping.
+function Start-Sleep {param([int]$Seconds)}
+$script:deviceSequence=[Collections.Generic.Queue[object]]::new()
+foreach($step in @(@('List of devices attached'),@('fake-frame unauthorized'),@('fake-frame device'))){$script:deviceSequence.Enqueue($step)}
+function Invoke-QvvrAdb([string[]]$Arguments){if($Arguments[0] -eq 'devices'){if($script:deviceSequence.Count -gt 1){return $script:deviceSequence.Dequeue()};return $script:deviceSequence.Peek()}}
+$waited=@(Wait-QvvrAuthorizedDevice 60 6>$null)
+Assert-Installer ($waited.Count -eq 1 -and $waited[0] -eq 'fake-frame') 'Installer must wait through the USB-debugging prompt.'
+foreach($case in @(@('fake-frame unauthorized','did not authorize'),@('fake-frame offline','not responding'),@('List of devices attached','No Steam Frame found'))){
+ $script:deviceSequence.Clear();$script:deviceSequence.Enqueue(@($case[0]))
+ $message='';try{Wait-QvvrAuthorizedDevice -1 6>$null}catch{$message=$_.Exception.Message}
+ Assert-Installer ($message -match $case[1]) "Timeout must explain '$($case[0])': $message"
+}
+# Final screen: unmistakable verdict plus the next step.
+$screen=(Write-QvvrResult 'Install' 'QV is running. Close it yourself and retry; no process was terminated.' 6>&1 | Out-String)
+Assert-Installer ($screen -match 'FAILED - QVVR was not installed' -and $screen -match 'Close QV on the Frame') 'Failure screen must state the result and next step.'
+$screen=(Write-QvvrResult 'Install' 'The bundled ADB (SteamFrame/platform-tools/adb.exe) is missing. Extract the WHOLE release ZIP again.' 6>&1 | Out-String)
+Assert-Installer ($screen -match 'extract the WHOLE ZIP') 'A broken extraction must point to re-extracting, not to USB.'
+$script:QvvrOutcome='Installed';$script:QvvrLaunchOptionsReady=$true
+Assert-Installer ((Write-QvvrResult 'Install' '' 6>&1 | Out-String) -match 'SUCCESS - QVVR is installed') 'Success screen missing.'
+$script:QvvrLaunchOptionsReady=$false
+$screen=(Write-QvvrResult 'Install' '' 6>&1 | Out-String)
+Assert-Installer ($screen -match 'one manual step left' -and $screen -match [regex]::Escape($required)) 'Unset launch options must be shown as the remaining step.'
+$script:QvvrOutcome='Uninstalled'
+Assert-Installer ((Write-QvvrResult 'Uninstall' '' 6>&1 | Out-String) -match 'SUCCESS - QVVR was removed') 'Uninstall success screen missing.'
+Assert-Installer (@(Get-QvvrReleaseExtraNames) -contains 'SteamFrame/platform-tools/adb.exe' -and @(Get-QvvrReleaseExtraNames) -contains 'SteamFrame/Install-QVVR-on-Frame.bat') 'Release must bundle ADB and the one-click installer.'
 Write-Host "Installer/archive/PC uninstall/ADB orchestration: $script:checks assertions passed. Fixtures retained: $testRoot"
 Write-Host 'No real game, Frame deployment or headset acceptance was performed.'

@@ -42,8 +42,9 @@ Important limits
 Installation and updates
 The release ZIP contains PC/ (game overlay), SteamFrame/ (USB installer) and
 README.txt. PC: close QV and copy the CONTENTS of PC/ beside QV.exe.
-Steam Frame: extract the whole ZIP and run SteamFrame/QVVR-Frame-Setup.bat; it
-installs PC/ over USB and completes the QV Steam launch options.
+Steam Frame: extract the whole ZIP and run SteamFrame/Install-QVVR-on-Frame.bat;
+it installs PC/ over USB (ADB included), completes the QV Steam launch options
+and ends with a clear SUCCESS/FAILED result.
 Back up existing mod files first. If BepInEx is shared with other mods, review
 loader/core replacements rather than overwriting an incompatible installation.
 For an update preserve BepInEx/config/dev.qvvr.prototype.cfg; do not replace

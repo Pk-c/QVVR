@@ -24,10 +24,12 @@ function Get-QvvrPackageFiles([string]$Root,[string]$Configuration='Release') {
  return $files
 }
 
-# Release ZIP files outside PC/ (the game overlay): Frame USB installer + guide.
+# Release ZIP files outside PC/ (the game overlay): Frame USB installer, guide
+# and the unmodified official ADB it uses (never uploaded to the headset).
 function Get-QvvrReleaseExtraFiles([string]$Root) {
  $files=[ordered]@{}
  $files['README.txt']=Join-Path $Root 'package-assets/RELEASE-README.txt'
- foreach($name in @('QVVR-Frame-Setup.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt','QVVR-Frame-Defaults.cfg')){$files["SteamFrame/$name"]=Join-Path $Root "package-assets/$name"}
+ foreach($name in @('Install-QVVR-on-Frame.bat','Uninstall-QVVR-from-Frame.bat','QVVR-Frame-Setup.ps1','QVVR-Frame-Setup.txt','QVVR-Frame-Defaults.cfg')){$files["SteamFrame/$name"]=Join-Path $Root "package-assets/$name"}
+ foreach($name in @('adb.exe','AdbWinApi.dll','AdbWinUsbApi.dll','NOTICE.txt')){$files["SteamFrame/platform-tools/$name"]=Join-Path $Root ".deps/android-platform-tools/platform-tools/$name"}
  return $files
 }

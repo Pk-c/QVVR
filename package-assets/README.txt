@@ -48,10 +48,11 @@ Steam launch options for the Windows build on Steam Frame (the SteamFrame USB
 installer sets them automatically when Steam CEF Remote Debugging is enabled):
   WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11
 
-Native Windows PCVR (Steam Link / Virtual Desktop): use -force-d3d11, not the
-Proton WINEDLLOVERRIDES prefix. Connect the headset/controllers in SteamVR first,
-keep Diorama.Passthrough=false and Input.Layout=FaceButtons for Touch-style roles,
-then start QV manually. This candidate uses OpenVR through SteamVR, not direct
+Native Windows PCVR (Steam Link / Virtual Desktop): no launch options are needed
+(QV already uses D3D11; add -force-d3d11 only if the log says "QVVR requires
+D3D11"). Never use the Proton WINEDLLOVERRIDES prefix on Windows. Connect the
+headset/controllers in SteamVR first, keep Diorama.Passthrough=false and
+Input.Layout=FaceButtons for Touch-style roles, then start QV manually. This candidate uses OpenVR through SteamVR, not direct
 VDXR or an OpenComposite replacement DLL. Opaque black/green exterior is expected.
 Prediction follows the runtime cadence/display delay/vsync instead of assuming
 72 Hz. Quest 3 + Virtual Desktop and Steam Link hardware validation is pending.
@@ -190,7 +191,7 @@ Uninstall:
   BepInEx, winhttp.dll, doorstop_config.ini, game files and other mods are kept.
   Optional: powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -RemoveConfig
   also backs up/removes settings. Add -WhatIf for a non-mutating preview.
-  Frame from PC: run SteamFrame/QVVR-Frame-Setup.bat from the extracted release
-  ZIP and choose install/update, launch options or uninstall.
-  Needs authorized USB debugging and Android SDK Platform Tools (not bundled).
+  Frame from PC: run SteamFrame/Uninstall-QVVR-from-Frame.bat from the extracted
+  release ZIP (Install-QVVR-on-Frame.bat installs/updates). Needs USB debugging
+  enabled on the Frame; ADB is included in SteamFrame/platform-tools.
   Existing settings are preserved; incompatible shared loader files are refused.

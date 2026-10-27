@@ -25,3 +25,30 @@ foreach($releaseInput in $inputs){
  if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $releaseInput[2]){throw "Release dependency checksum mismatch: $($releaseInput[0])"}
 }
 Write-Host 'Pinned release licenses and Doorstop source verified (ignored .deps).'
+
+# Unmodified official ADB (Android SDK Platform Tools r37.0.1) bundled with the
+# Frame USB installer so users install nothing. Google only publishes a "latest"
+# URL: extract the exact pinned files, refuse anything else.
+$adbDirectory=Join-Path $root '.deps/android-platform-tools/platform-tools'
+$adbFiles=[ordered]@{
+ 'adb.exe'='B4A6B455702684652CCCF7B46258B29E653538904359A58FD4931CF3EF286B3F'
+ 'AdbWinApi.dll'='C1D653030B4BDE65D3E07E4D0B0979E17BE56DF1436CDD15528630F27808050D'
+ 'AdbWinUsbApi.dll'='0710E894D9B40F71A670C13C694079D564C92C1279DA382CFE4850983AAEBE1B'
+ 'NOTICE.txt'='38EC8C6F5B7799C223FFEAB1F9E81C2D5FC67B5E56D6424F649630CA1EE1A811'
+}
+if(@($adbFiles.Keys | Where-Object {!(Test-Path -LiteralPath (Join-Path $adbDirectory $_) -PathType Leaf)}).Count -gt 0){
+ if($Offline){throw 'Missing bundled ADB (Android SDK Platform Tools). Run tools/setup-release-deps.ps1 once online.'}
+ New-Item -ItemType Directory -Force -Path $adbDirectory | Out-Null
+ $download=Join-Path ([IO.Path]::GetTempPath()) ('qvvr-platform-tools-'+[Guid]::NewGuid().ToString('N')+'.zip')
+ try {
+  Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' -OutFile $download
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $archive=[IO.Compression.ZipFile]::OpenRead($download)
+  try { foreach($name in $adbFiles.Keys){[IO.Compression.ZipFileExtensions]::ExtractToFile($archive.GetEntry("platform-tools/$name"),(Join-Path $adbDirectory $name),$true)} }
+  finally { $archive.Dispose() }
+ } finally { Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue }
+}
+foreach($name in $adbFiles.Keys){
+ if((Get-FileHash -LiteralPath (Join-Path $adbDirectory $name) -Algorithm SHA256).Hash -ne $adbFiles[$name]){throw "Bundled ADB checksum mismatch: $name. Google may have published a newer platform-tools; review it and update the pins."}
+}
+Write-Host 'Pinned ADB r37.0.1 (adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll, NOTICE.txt) verified (ignored .deps).'

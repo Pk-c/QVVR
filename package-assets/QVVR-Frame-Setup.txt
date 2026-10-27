@@ -2,19 +2,20 @@ QVVR - Steam Frame USB manager (Windows PC)
 ==========================================
 
 1. Close QV yourself on the Frame. Connect Frame to this PC over USB.
-2. Enable Frame Developer Mode / USB debugging and authorize the PC in the headset.
+2. Enable Frame Developer Mode / USB debugging. The first time, accept the
+   "Allow USB debugging" prompt in the headset (the installer waits for it).
 3. Extract the WHOLE release ZIP (QVVR-vX.Y.Z.zip). This SteamFrame folder must
    stay beside the PC folder: the installer uploads the content of ../PC.
-4. Put official Android SDK Platform Tools in this folder, so the path is
-   SteamFrame/platform-tools/adb.exe. An existing adb on PATH or Android SDK
-   (ANDROID_SDK_ROOT / ANDROID_HOME) is also accepted.
-5. For automatic Steam launch options: keep Steam running on the Frame and
+   ADB is included (platform-tools/); nothing else needs to be installed.
+4. For automatic Steam launch options: keep Steam running on the Frame and
    enable CEF Remote Debugging in the Frame developer settings.
-6. Double-click QVVR-Frame-Setup.bat and choose:
-     1  Install / update, then set the Steam launch options
-     2  Uninstall (keep settings)
-     3  Uninstall + remove settings
-     4  Steam launch options only
+5. Double-click:
+     Install-QVVR-on-Frame.bat       Install / update, then set launch options
+     Uninstall-QVVR-from-Frame.bat   Uninstall (keeps settings)
+   Each ends with a SUCCESS / FAILED screen with the reason and the next step.
+   Advanced (PowerShell): QVVR-Frame-Setup.ps1 -Action Uninstall -RemoveConfig
+   also removes settings; -Action LaunchOptions only sets launch options;
+   no -Action shows the old menu.
 
 No administrator rights, game launch, game termination or permanent PowerShell
 execution-policy change is requested. -ExecutionPolicy Bypass applies only to
@@ -43,7 +44,7 @@ adds only what is missing: your other options are kept. Steam stays open and
 must confirm the new value. localconfig.vdf is never edited. If Steam is not
 reachable, the saved Steam config is only read to tell whether the options are
 already set; otherwise set them manually in Steam > QV > Properties, or enable
-CEF Remote Debugging and run option 4. Conflicting options (another forced
+CEF Remote Debugging and run Install-QVVR-on-Frame.bat again. Conflicting options (another forced
 graphics API, a WINEDLLOVERRIDES without winhttp=n,b) are reported, not changed.
 A failure to set launch options never undoes the verified installation.
 
