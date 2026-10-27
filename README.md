@@ -1,22 +1,39 @@
 # QVVR
 
+<img width="1655" height="950" alt="qvvr" src="https://github.com/user-attachments/assets/cf1c5191-0376-4428-8ae9-3d28ae8c1f01" />
+
+
+A VR mod for **[QV](https://store.steampowered.com/app/1494110/QV/)**
+(IZZLE).
+
+QV is a Top down puzzle game, this mod turn it into a 3D Diorama that could can move around and scale with passthrouht
+
+The mod can run in pcvr as well as steamframe standalone
+
+If you like my work you can follow me on Patreon ( free membership ), I try to make like native mode for beautiful games!
+
+https://patreon.com/ChromaticMod
+
+<a href="https://patreon.com/ChromaticMod">
+  <img width="200" height="105" alt="imakevrmodforgames-preview" src="https://github.com/user-attachments/assets/0517352b-e120-47bc-b062-b85fc333f814" />
+</a>
+
+OR
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/A0Y524C5N8)
+
 ## What it does
 
-QVVR is an experimental VR mod for the Windows version of **QV**. It plays the
+QVVR is an MR / VR mod of the game of **QV**. It plays the
 game as a miniature diorama you can place, resize and walk around in your room,
 on PC VR through SteamVR or on Steam Frame.
 
-- Stereo 3D gameplay with head tracking.
+- Stereo 3D gameplay with 6DOF tracking.
 - Diorama mode: the level is cut to a cylinder you move, scale and rotate with
   both grips. Can be turned off for full-size, room-scale VR.
-- Passthrough on Steam Frame: the diorama sits in your real room.
-- 3D hub, costume and map screens. Menus, HUD and dialogue are shown on readable
-  panels that follow your view.
+- Passthrough on SteamFrame & Virtual Desktop on Pc : the diorama sits in your real room.
+- HUD and dialogue are modified to be more readable
 - In-headset settings menu (click both sticks).
-- Original game files are never modified. Without a working VR runtime the game
-  runs normally on the desktop.
-
-This is an experimental release: expect rough edges and report issues.
 
 ## Installing
 
@@ -26,20 +43,17 @@ installer). Close QV before installing or updating.
 
 ### On PC
 
-1. Copy the **contents** of the `PC` folder directly into the QV game folder,
-   next to `QV.exe` (Steam > QV > Manage > Browse local files).
-   When updating, keep your existing `BepInEx/config/dev.qvvr.prototype.cfg`.
-2. Start SteamVR with your headset connected (Quest 3: Steam Link, or Virtual
-   Desktop in SteamVR mode), then start QV.
+Just Copy the **contents** of the `PC` folder directly into the QV game folder,
+next to `QV.exe` (Steam > QV > Manage > Browse local files).
+When updating, keep your existing `BepInEx/config/dev.qvvr.prototype.cfg`.
 
 If the game stays on the desktop and `BepInEx/LogOutput.log` says
 `QVVR requires D3D11`, add `-force-d3d11` to Steam > QV > Properties > Launch
 options.
 
-### On Steam Frame
+To get passthrought on PC you can use virtual desktop with and activate the passthrought in the option with a chromakey.
 
-Nothing else needs to be installed: the installer runs on a Windows PC and
-includes ADB.
+### On Steam Frame
 
 1. On the Frame, enable Developer Mode / USB debugging and connect it to your PC
    with a USB cable. Keep Steam running on the Frame; to let the installer set
@@ -55,12 +69,7 @@ includes ADB.
    WINEDLLOVERRIDES="winhttp=n,b" %command% -force-d3d11
    ```
 
-4. Start QV on the Frame.
-
 ## Uninstalling
-
-Close QV first. Uninstalling moves QVVR into the game's `.qvvr-backups` folder,
-so it can be restored. BepInEx, other mods and the game itself are left alone.
 
 ### On PC
 
@@ -95,7 +104,7 @@ Through SteamVR, using the default `Layout=FaceButtons`.
 
 | Action | Button |
 | --- | --- |
-| Move Q | Left stick |
+| Move | Left stick |
 | Rotate diorama / bring it closer or further | Right stick |
 | Move, resize and rotate the diorama | Hold both grips and move your hands |
 | Main game action / confirm | A |
