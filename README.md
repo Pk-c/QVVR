@@ -3,7 +3,7 @@
 <img width="1655" height="950" alt="qvvr" src="https://github.com/user-attachments/assets/cf1c5191-0376-4428-8ae9-3d28ae8c1f01" />
 
 
-A VR mod for **[QV](https://store.steampowered.com/app/1494110/QV/)**
+A VR/MR mod for **[QV](https://store.steampowered.com/app/1494110/QV/)**
 (IZZLE).
 
 QV is a Top down puzzle game, this mod turn it into a 3D Diorama that could can move around and scale with passthrouht
